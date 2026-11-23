@@ -1,0 +1,6 @@
+{
+  "name": "Malvinas Pro Service",
+  "description": "Gestión de ingresos y gastos mensuales, seguimiento de pagos de clientes, control de vencimientos de VPN con recordatorios 1 día antes y perfiles para Servicios Comunes y Servicios Premium.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

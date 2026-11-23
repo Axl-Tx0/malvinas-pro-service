@@ -1,0 +1,499 @@
+{
+  "entities": {
+    "FinancialTransaction": {
+      "title": "FinancialTransaction",
+      "description": "Monthly income or expense entry segmented by service profile (common or premium).",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID."
+        },
+        "profileType": {
+          "type": "string",
+          "enum": ["common", "premium"],
+          "description": "Service profile bucket: common (Servicios Comunes) or premium (Servicios Premium)."
+        },
+        "type": {
+          "type": "string",
+          "enum": ["income", "expense"],
+          "description": "Transaction direction: income or expense."
+        },
+        "title": {
+          "type": "string",
+          "description": "Short description or concept of the movement."
+        },
+        "category": {
+          "type": "string",
+          "description": "Category label such as Servicios, VPN, Insumos, or Otros."
+        },
+        "amount": {
+          "type": "number",
+          "description": "Positive monetary amount."
+        },
+        "monthKey": {
+          "type": "string",
+          "description": "Year-month key in YYYY-MM format."
+        },
+        "dateMillis": {
+          "type": "integer",
+          "description": "Transaction date in epoch milliseconds."
+        },
+        "linkedClientId": {
+          "type": "string",
+          "description": "Optional client document ID if generated from a client payment."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Optional notes."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp (must submit FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp (must submit FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "userId",
+        "profileType",
+        "type",
+        "title",
+        "amount",
+        "monthKey",
+        "dateMillis",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ServiceClient": {
+      "title": "ServiceClient",
+      "description": "Client subscribed to a common or premium service with per-month payment tracking.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID."
+        },
+        "profileType": {
+          "type": "string",
+          "enum": ["common", "premium"],
+          "description": "Service profile bucket: common or premium."
+        },
+        "name": {
+          "type": "string",
+          "description": "Client person name."
+        },
+        "serviceName": {
+          "type": "string",
+          "description": "Contracted service name."
+        },
+        "monthlyFee": {
+          "type": "number",
+          "description": "Monthly amount to charge the client."
+        },
+        "billingDay": {
+          "type": "integer",
+          "description": "Day of month (1-31) when payment is due."
+        },
+        "phone": {
+          "type": "string",
+          "description": "Optional contact phone."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Optional notes."
+        },
+        "paidMonths": {
+          "type": "array",
+          "description": "Bounded list of YYYY-MM keys in which the client has paid."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp (must submit FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp (must submit FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "userId",
+        "profileType",
+        "name",
+        "serviceName",
+        "monthlyFee",
+        "billingDay",
+        "paidMonths",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "VpnAccount": {
+      "title": "VpnAccount",
+      "description": "VPN user subscription tracking expiration date, amount to charge, payment status, and 1-day-before alert preference.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID."
+        },
+        "profileType": {
+          "type": "string",
+          "enum": ["common", "premium"],
+          "description": "Service profile bucket: common or premium."
+        },
+        "clientName": {
+          "type": "string",
+          "description": "Person name for this VPN subscription."
+        },
+        "clientPhone": {
+          "type": "string",
+          "description": "Optional WhatsApp/phone number for sending expiration reminders."
+        },
+        "vpnUsername": {
+          "type": "string",
+          "description": "VPN account username or identifier."
+        },
+        "planName": {
+          "type": "string",
+          "description": "VPN plan description."
+        },
+        "amountToCharge": {
+          "type": "number",
+          "description": "Amount to charge upon renewal/expiration."
+        },
+        "expirationMillis": {
+          "type": "integer",
+          "description": "VPN expiration date in epoch milliseconds."
+        },
+        "isPaid": {
+          "type": "boolean",
+          "description": "Whether the current VPN period is paid."
+        },
+        "notifyOneDayBefore": {
+          "type": "boolean",
+          "description": "Whether to notify 1 day before expiration."
+        },
+        "paymentPromiseMillis": {
+          "type": "integer",
+          "description": "Optional promised payment date in epoch milliseconds (0 when no active promise)."
+        },
+        "paymentPromiseNote": {
+          "type": "string",
+          "description": "Optional note for the promised payment date."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Optional notes."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp (must submit FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp (must submit FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "userId",
+        "profileType",
+        "clientName",
+        "vpnUsername",
+        "amountToCharge",
+        "expirationMillis",
+        "isPaid",
+        "notifyOneDayBefore",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Reseller": {
+      "title": "Reseller",
+      "description": "VPN reseller tracking credit quantity, unit price per credit, and calculated total value.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID."
+        },
+        "profileType": {
+          "type": "string",
+          "enum": ["common", "premium"],
+          "description": "Service profile bucket: common (Servicios Comunes) or premium (Servicios Premium)."
+        },
+        "name": {
+          "type": "string",
+          "description": "Reseller name or alias."
+        },
+        "phone": {
+          "type": "string",
+          "description": "Optional WhatsApp or contact phone number."
+        },
+        "creditsCount": {
+          "type": "integer",
+          "description": "Number of credits held by the reseller."
+        },
+        "pricePerCredit": {
+          "type": "number",
+          "description": "Unit price per credit."
+        },
+        "totalAmount": {
+          "type": "number",
+          "description": "Calculated total (creditsCount * pricePerCredit)."
+        },
+        "expirationMillis": {
+          "type": "integer",
+          "description": "Credits billing/expiration date in epoch milliseconds (30-day cycle)."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Optional notes."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp (must submit FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp (must submit FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "userId",
+        "profileType",
+        "name",
+        "creditsCount",
+        "pricePerCredit",
+        "totalAmount",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "UserSettings": {
+      "title": "UserSettings",
+      "description": "User preferences for WhatsApp reminder templates, business name, notification hour, and quick renewal defaults.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID."
+        },
+        "businessName": {
+          "type": "string",
+          "description": "Business name or signature used in WhatsApp templates."
+        },
+        "whatsappClientTemplate": {
+          "type": "string",
+          "description": "Customizable WhatsApp reminder template for monthly service clients."
+        },
+        "whatsappVpnTemplate": {
+          "type": "string",
+          "description": "Customizable WhatsApp reminder template for VPN accounts."
+        },
+        "defaultCountryCode": {
+          "type": "string",
+          "description": "Optional international dialing code digits prepended to local phone numbers."
+        },
+        "reminderHour": {
+          "type": "integer",
+          "description": "Local hour of day (0-23) when 1-day-before VPN alarms trigger."
+        },
+        "defaultVpnDays": {
+          "type": "integer",
+          "description": "Default number of days added by quick VPN renewal (1-365)."
+        },
+        "autoRecordIncomeOnPay": {
+          "type": "boolean",
+          "description": "Default toggle for automatically creating an income transaction when marking a client or VPN as paid."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp (must submit FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp (must submit FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "userId",
+        "businessName",
+        "whatsappClientTemplate",
+        "whatsappVpnTemplate",
+        "reminderHour",
+        "defaultVpnDays",
+        "autoRecordIncomeOnPay",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "RemoteAppConfig": {
+      "title": "RemoteAppConfig",
+      "description": "Read-only remote live configuration published from Firebase Console for announcements, recommended WhatsApp templates, and latest published version notices.",
+      "type": "object",
+      "properties": {
+        "latestVersionCode": {
+          "type": "integer",
+          "description": "Latest published versionCode."
+        },
+        "latestVersionName": {
+          "type": "string",
+          "description": "Latest published versionName."
+        },
+        "announcementText": {
+          "type": "string",
+          "description": "Optional live banner announcement pushed over the internet."
+        },
+        "updateNotes": {
+          "type": "string",
+          "description": "Release notes for latest published build."
+        },
+        "recommendedClientTemplate": {
+          "type": "string",
+          "description": "Optional remotely updated WhatsApp template for clients."
+        },
+        "recommendedVpnTemplate": {
+          "type": "string",
+          "description": "Optional remotely updated WhatsApp template for VPN accounts."
+        }
+      }
+    },
+    "AuthorizedUser": {
+      "title": "AuthorizedUser",
+      "description": "Admin-managed user access record linking an authorized email, salted PBKDF2 password hash, and real-time enabled/disabled status.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "description": "Normalized lowercase authorized email matching the document ID."
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Display name of the authorized person."
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether this user is currently permitted to use the application."
+        },
+        "passwordHash": {
+          "type": "string",
+          "description": "Hex-encoded PBKDF2-HMAC-SHA256 hash of the access password."
+        },
+        "passwordSalt": {
+          "type": "string",
+          "description": "Hex-encoded random 16-byte salt."
+        },
+        "passwordVersion": {
+          "type": "integer",
+          "description": "Monotonically increasing version bumped on password reset to require re-verification."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Optional admin notes."
+        },
+        "boundUid": {
+          "type": "string",
+          "description": "Firebase Auth UID bound when the invited user signs in."
+        },
+        "lastAccessAt": {
+          "type": "integer",
+          "description": "Epoch milliseconds of the last verified access."
+        },
+        "createdBy": {
+          "type": "string",
+          "description": "Admin Firebase Auth UID who created this record."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "email",
+        "displayName",
+        "enabled",
+        "passwordHash",
+        "passwordSalt",
+        "passwordVersion",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AdminSupportContact": {
+      "title": "AdminSupportContact",
+      "description": "Admin-managed WhatsApp phone number readable by signed-in users (including disabled users) so they can contact the admin from the access gate.",
+      "type": "object",
+      "properties": {
+        "whatsappPhone": {
+          "type": "string",
+          "description": "Admin WhatsApp phone number with country code."
+        },
+        "updatedBy": {
+          "type": "string",
+          "description": "Admin Firebase Auth UID."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": ["whatsappPhone", "updatedBy", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/transactions/{transactionId}": {
+      "schema": { "$ref": "#/entities/FinancialTransaction" },
+      "description": "User-owned monthly income and expense records."
+    },
+    "/users/{userId}/clients/{clientId}": {
+      "schema": { "$ref": "#/entities/ServiceClient" },
+      "description": "User-owned service clients and monthly payment status."
+    },
+    "/users/{userId}/vpnAccounts/{vpnId}": {
+      "schema": { "$ref": "#/entities/VpnAccount" },
+      "description": "User-owned VPN accounts with expiration dates, charges, and 1-day-before reminder toggle."
+    },
+    "/users/{userId}/resellers/{resellerId}": {
+      "schema": { "$ref": "#/entities/Reseller" },
+      "description": "User-owned VPN resellers tracking credits count, price per credit, and total value."
+    },
+    "/users/{userId}/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/UserSettings" },
+      "description": "User-owned configuration for WhatsApp message templates, alert schedule, and defaults."
+    },
+    "/appConfig/public": {
+      "schema": { "$ref": "#/entities/RemoteAppConfig" },
+      "description": "Admin-managed remote live config readable by active authorized users for OTA announcements, template updates, and release metadata."
+    },
+    "/appConfig/support": {
+      "schema": { "$ref": "#/entities/AdminSupportContact" },
+      "description": "Admin-managed WhatsApp contact number readable by signed-in users on the disabled/unauthorized lock screen."
+    },
+    "/authorizedUsers/{emailId}": {
+      "schema": { "$ref": "#/entities/AuthorizedUser" },
+      "description": "Admin-managed authorized users allowlist and real-time kill switch (enabled/disabled)."
+    }
+  }
+}

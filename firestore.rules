@@ -1,0 +1,405 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Global Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function hasVerifiedEmail() {
+      return isSignedIn() &&
+             request.auth.token.email is string &&
+             request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return hasVerifiedEmail() &&
+             request.auth.token.email.lower() == 'axeldelvalle737@gmail.com';
+    }
+
+    function isValidEmailDocId(id) {
+      return id is string &&
+             id.size() >= 3 &&
+             id.size() <= 128 &&
+             id == id.lower() &&
+             id.matches('^[^/\\s@]+@[^/\\s@]+\\.[^/\\s@]+$');
+    }
+
+    function isAuthorizedActiveUser() {
+      return isAdmin() || (
+        hasVerifiedEmail() &&
+        exists(/databases/$(database)/documents/authorizedUsers/$(request.auth.token.email.lower())) &&
+        get(/databases/$(database)/documents/authorizedUsers/$(request.auth.token.email.lower())).data.enabled == true
+      );
+    }
+
+    function isActiveOwner(userId) {
+      return isOwner(userId) && isAuthorizedActiveUser();
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidProfileType(val) {
+      return val is string && (val == 'common' || val == 'premium');
+    }
+
+    // --- Entity Validation Helpers ---
+    function isValidTransaction(data, userId) {
+      return data.userId is string && data.userId == userId &&
+             isValidProfileType(data.profileType) &&
+             data.type is string && (data.type == 'income' || data.type == 'expense') &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 100 &&
+             (!('category' in data) || (data.category is string && data.category.size() <= 50)) &&
+             data.amount is number && data.amount > 0 && data.amount <= 1000000000 &&
+             data.monthKey is string && data.monthKey.size() == 7 && data.monthKey.matches('^[0-9]{4}-[0-9]{2}$') &&
+             data.dateMillis is int && data.dateMillis >= 0 &&
+             (!('linkedClientId' in data) || (data.linkedClientId is string && data.linkedClientId.size() <= 128)) &&
+             (!('notes' in data) || (data.notes is string && data.notes.size() <= 300));
+    }
+
+    function isValidClient(data, userId) {
+      return data.userId is string && data.userId == userId &&
+             isValidProfileType(data.profileType) &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 80 &&
+             data.serviceName is string && data.serviceName.size() >= 1 && data.serviceName.size() <= 80 &&
+             data.monthlyFee is number && data.monthlyFee >= 0 && data.monthlyFee <= 1000000000 &&
+             data.billingDay is int && data.billingDay >= 1 && data.billingDay <= 31 &&
+             (!('phone' in data) || (data.phone is string && data.phone.size() <= 30)) &&
+             (!('notes' in data) || (data.notes is string && data.notes.size() <= 300)) &&
+             data.paidMonths is list && data.paidMonths.size() <= 120 &&
+             (data.paidMonths.size() == 0 || data.paidMonths[0] is string);
+    }
+
+    function isValidVpnAccount(data, userId) {
+      return data.userId is string && data.userId == userId &&
+             isValidProfileType(data.profileType) &&
+             data.clientName is string && data.clientName.size() >= 1 && data.clientName.size() <= 80 &&
+             (!('clientPhone' in data) || (data.clientPhone is string && data.clientPhone.size() <= 30)) &&
+             data.vpnUsername is string && data.vpnUsername.size() >= 1 && data.vpnUsername.size() <= 60 &&
+             (!('planName' in data) || (data.planName is string && data.planName.size() <= 60)) &&
+             data.amountToCharge is number && data.amountToCharge >= 0 && data.amountToCharge <= 1000000000 &&
+             data.expirationMillis is int && data.expirationMillis >= 0 &&
+             data.isPaid is bool &&
+             data.notifyOneDayBefore is bool &&
+             (!('paymentPromiseMillis' in data) || (data.paymentPromiseMillis is int && data.paymentPromiseMillis >= 0)) &&
+             (!('paymentPromiseNote' in data) || (data.paymentPromiseNote is string && data.paymentPromiseNote.size() <= 160)) &&
+             (!('notes' in data) || (data.notes is string && data.notes.size() <= 300));
+    }
+
+    function isValidReseller(data, userId) {
+      return data.userId is string && data.userId == userId &&
+             isValidProfileType(data.profileType) &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 80 &&
+             (!('phone' in data) || (data.phone is string && data.phone.size() <= 30)) &&
+             data.creditsCount is int && data.creditsCount >= 0 && data.creditsCount <= 1000000 &&
+             data.pricePerCredit is number && data.pricePerCredit >= 0 && data.pricePerCredit <= 1000000000 &&
+             data.totalAmount is number && data.totalAmount >= 0 && data.totalAmount <= 1000000000000 &&
+             (!('expirationMillis' in data) || (data.expirationMillis is int && data.expirationMillis >= 0)) &&
+             (!('notes' in data) || (data.notes is string && data.notes.size() <= 300));
+    }
+
+    function isValidUserSettings(data, userId) {
+      return data.userId is string && data.userId == userId &&
+             data.businessName is string && data.businessName.size() >= 1 && data.businessName.size() <= 80 &&
+             data.whatsappClientTemplate is string && data.whatsappClientTemplate.size() >= 1 && data.whatsappClientTemplate.size() <= 1500 &&
+             data.whatsappVpnTemplate is string && data.whatsappVpnTemplate.size() >= 1 && data.whatsappVpnTemplate.size() <= 1500 &&
+             (!('defaultCountryCode' in data) || (data.defaultCountryCode is string && data.defaultCountryCode.size() <= 10)) &&
+             data.reminderHour is int && data.reminderHour >= 0 && data.reminderHour <= 23 &&
+             data.defaultVpnDays is int && data.defaultVpnDays >= 1 && data.defaultVpnDays <= 365 &&
+             data.autoRecordIncomeOnPay is bool;
+    }
+
+    function isValidAuthorizedUser(data, emailId) {
+      return data.email is string && data.email == emailId &&
+             isValidEmailDocId(data.email) &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
+             data.enabled is bool &&
+             data.passwordHash is string && data.passwordHash.size() == 64 &&
+             data.passwordSalt is string && data.passwordSalt.size() == 32 &&
+             data.passwordVersion is int && data.passwordVersion >= 1 && data.passwordVersion <= 1000000 &&
+             (!('notes' in data) || (data.notes is string && data.notes.size() <= 200)) &&
+             (!('boundUid' in data) || (data.boundUid is string && data.boundUid.size() <= 128)) &&
+             (!('lastAccessAt' in data) || (data.lastAccessAt is int && data.lastAccessAt >= 0)) &&
+             data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128;
+    }
+
+    // --- Admin-Managed Authorized Users (Access Control & Instant Disable) ---
+    match /authorizedUsers/{emailId} {
+      allow list: if isAdmin();
+      allow get: if isAdmin() || (
+        hasVerifiedEmail() &&
+        request.auth.token.email.lower() == emailId
+      );
+
+      allow create: if isAdmin() &&
+                       isValidEmailDocId(emailId) &&
+                       incoming().keys().hasAll([
+                         'email', 'displayName', 'enabled', 'passwordHash',
+                         'passwordSalt', 'passwordVersion', 'createdBy',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'email', 'displayName', 'enabled', 'passwordHash',
+                         'passwordSalt', 'passwordVersion', 'notes', 'boundUid',
+                         'lastAccessAt', 'createdBy', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().createdBy == request.auth.uid &&
+                       incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                       isValidAuthorizedUser(incoming(), emailId);
+
+      allow update: if isValidEmailDocId(emailId) &&
+                       isValidAuthorizedUser(incoming(), emailId) &&
+                       incoming().email == existing().email &&
+                       incoming().createdBy == existing().createdBy &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                       (
+                         (
+                           isAdmin() &&
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'displayName', 'enabled', 'passwordHash', 'passwordSalt',
+                             'passwordVersion', 'notes', 'updatedAt'
+                           ])
+                         ) || (
+                           hasVerifiedEmail() &&
+                           request.auth.token.email.lower() == emailId &&
+                           existing().enabled == true &&
+                           incoming().boundUid == request.auth.uid &&
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'boundUid', 'lastAccessAt', 'updatedAt'
+                           ])
+                         )
+                       );
+
+      allow delete: if isAdmin() && isValidEmailDocId(emailId);
+    }
+
+    // --- User-Scoped Collections (Enforces Active Authorization) ---
+    match /users/{userId} {
+
+      match /transactions/{transactionId} {
+        allow list: if isActiveOwner(userId);
+        allow get: if isActiveOwner(userId) && isValidId(transactionId);
+
+        allow create: if isActiveOwner(userId) &&
+                         isValidId(transactionId) &&
+                         incoming().keys().hasAll([
+                           'userId', 'profileType', 'type', 'title',
+                           'amount', 'monthKey', 'dateMillis', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'profileType', 'type', 'title', 'category',
+                           'amount', 'monthKey', 'dateMillis', 'linkedClientId',
+                           'notes', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         isValidTransaction(incoming(), userId);
+
+        allow update: if isActiveOwner(userId) &&
+                         isValidId(transactionId) &&
+                         isValidTransaction(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'profileType', 'type', 'title', 'category', 'amount',
+                           'monthKey', 'dateMillis', 'linkedClientId', 'notes', 'updatedAt'
+                         ]);
+
+        allow delete: if isActiveOwner(userId) && isValidId(transactionId);
+      }
+
+      match /clients/{clientId} {
+        allow list: if isActiveOwner(userId);
+        allow get: if isActiveOwner(userId) && isValidId(clientId);
+
+        allow create: if isActiveOwner(userId) &&
+                         isValidId(clientId) &&
+                         incoming().keys().hasAll([
+                           'userId', 'profileType', 'name', 'serviceName',
+                           'monthlyFee', 'billingDay', 'paidMonths', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'profileType', 'name', 'serviceName', 'monthlyFee',
+                           'billingDay', 'phone', 'notes', 'paidMonths', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         isValidClient(incoming(), userId);
+
+        allow update: if isActiveOwner(userId) &&
+                         isValidId(clientId) &&
+                         isValidClient(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'profileType', 'name', 'serviceName', 'monthlyFee',
+                           'billingDay', 'phone', 'notes', 'paidMonths', 'updatedAt'
+                         ]);
+
+        allow delete: if isActiveOwner(userId) && isValidId(clientId);
+      }
+
+      match /vpnAccounts/{vpnId} {
+        allow list: if isActiveOwner(userId);
+        allow get: if isActiveOwner(userId) && isValidId(vpnId);
+
+        allow create: if isActiveOwner(userId) &&
+                         isValidId(vpnId) &&
+                         incoming().keys().hasAll([
+                           'userId', 'profileType', 'clientName', 'vpnUsername',
+                           'amountToCharge', 'expirationMillis', 'isPaid',
+                           'notifyOneDayBefore', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'profileType', 'clientName', 'clientPhone', 'vpnUsername', 'planName',
+                           'amountToCharge', 'expirationMillis', 'isPaid',
+                           'notifyOneDayBefore', 'paymentPromiseMillis', 'paymentPromiseNote',
+                           'notes', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         isValidVpnAccount(incoming(), userId);
+
+        allow update: if isActiveOwner(userId) &&
+                         isValidId(vpnId) &&
+                         isValidVpnAccount(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'profileType', 'clientName', 'clientPhone', 'vpnUsername', 'planName',
+                           'amountToCharge', 'expirationMillis', 'isPaid',
+                           'notifyOneDayBefore', 'paymentPromiseMillis', 'paymentPromiseNote',
+                           'notes', 'updatedAt'
+                         ]);
+
+        allow delete: if isActiveOwner(userId) && isValidId(vpnId);
+      }
+
+      match /resellers/{resellerId} {
+        allow list: if isActiveOwner(userId);
+        allow get: if isActiveOwner(userId) && isValidId(resellerId);
+
+        allow create: if isActiveOwner(userId) &&
+                         isValidId(resellerId) &&
+                         incoming().keys().hasAll([
+                           'userId', 'profileType', 'name', 'creditsCount',
+                           'pricePerCredit', 'totalAmount', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'profileType', 'name', 'phone', 'creditsCount',
+                           'pricePerCredit', 'totalAmount', 'expirationMillis', 'notes', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         isValidReseller(incoming(), userId);
+
+        allow update: if isActiveOwner(userId) &&
+                         isValidId(resellerId) &&
+                         isValidReseller(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'profileType', 'name', 'phone', 'creditsCount',
+                           'pricePerCredit', 'totalAmount', 'expirationMillis', 'notes', 'updatedAt'
+                         ]);
+
+        allow delete: if isActiveOwner(userId) && isValidId(resellerId);
+      }
+
+      match /settings/{settingId} {
+        allow list: if isActiveOwner(userId);
+        allow get: if isActiveOwner(userId) && isValidId(settingId);
+
+        allow create: if isActiveOwner(userId) &&
+                         isValidId(settingId) &&
+                         incoming().keys().hasAll([
+                           'userId', 'businessName', 'whatsappClientTemplate', 'whatsappVpnTemplate',
+                           'reminderHour', 'defaultVpnDays', 'autoRecordIncomeOnPay', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'businessName', 'whatsappClientTemplate', 'whatsappVpnTemplate',
+                           'defaultCountryCode', 'reminderHour', 'defaultVpnDays',
+                           'autoRecordIncomeOnPay', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         isValidUserSettings(incoming(), userId);
+
+        allow update: if isActiveOwner(userId) &&
+                         isValidId(settingId) &&
+                         isValidUserSettings(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'businessName', 'whatsappClientTemplate', 'whatsappVpnTemplate',
+                           'defaultCountryCode', 'reminderHour', 'defaultVpnDays',
+                           'autoRecordIncomeOnPay', 'updatedAt'
+                         ]);
+
+        allow delete: if isActiveOwner(userId) && isValidId(settingId);
+      }
+    }
+
+    // --- Remote Live App Configuration, Admin Support Contact & GitHub Updates ---
+    match /appConfig/{configId} {
+      allow get: if (isAuthorizedActiveUser() && (configId == 'public' || configId == 'updates')) ||
+                    (isSignedIn() && configId == 'support');
+      allow create, update: if isAdmin() && (
+        (
+          configId == 'support' &&
+          incoming().keys().hasAll(['whatsappPhone', 'updatedBy', 'updatedAt']) &&
+          incoming().keys().hasOnly(['whatsappPhone', 'updatedBy', 'updatedAt']) &&
+          incoming().whatsappPhone is string &&
+          incoming().whatsappPhone.size() <= 30 &&
+          incoming().updatedBy == request.auth.uid &&
+          incoming().updatedAt is timestamp &&
+          incoming().updatedAt <= request.time
+        ) || (
+          configId == 'updates' &&
+          incoming().keys().hasAll(['githubRepo', 'updatedBy', 'updatedAt']) &&
+          incoming().keys().hasOnly(['githubRepo', 'updatedBy', 'updatedAt']) &&
+          incoming().githubRepo is string &&
+          incoming().githubRepo.size() <= 120 &&
+          (
+            incoming().githubRepo == '' ||
+            (
+              incoming().githubRepo.matches('^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') &&
+              !incoming().githubRepo.matches('.*\\.\\..*')
+            )
+          ) &&
+          incoming().updatedBy == request.auth.uid &&
+          incoming().updatedAt is timestamp &&
+          incoming().updatedAt <= request.time
+        )
+      );
+      allow list, delete: if false;
+    }
+  }
+}
