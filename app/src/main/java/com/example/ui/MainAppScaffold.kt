@@ -960,6 +960,11 @@ fun MainAppScaffold(
               style = MaterialTheme.typography.bodySmall,
             )
           }
+          Text(
+            text = "Se instala directamente encima sin desinstalar ni perder tus datos.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary,
+          )
         }
       },
       confirmButton = {

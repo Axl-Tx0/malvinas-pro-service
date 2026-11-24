@@ -469,6 +469,11 @@ fun AppUpdateSectionCard(
                   color = MaterialTheme.colorScheme.onPrimaryContainer,
                 )
               }
+              Text(
+                text = "Se instala encima de tu app actual sin desinstalar ni perder datos.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f),
+              )
               Button(
                 onClick = { onOpenGitHubDownload(release.bestOpenUrl) },
                 modifier = Modifier.fillMaxWidth().testTag("download_github_update_button"),
