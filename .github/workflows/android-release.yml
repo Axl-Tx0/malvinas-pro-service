@@ -104,20 +104,34 @@ jobs:
             echo "build_type=release" >> "$GITHUB_OUTPUT"
           else
             if [ -n "$DEBUG_KEYSTORE_BASE64" ]; then
-              printf '%s' "$DEBUG_KEYSTORE_BASE64" | tr -d '\r\n ' | base64 -d > debug.keystore
+              printf '%s' "$DEBUG_KEYSTORE_BASE64" | tr -d '\r\n ' | base64 -d > raw-debug.keystore
               echo "Usando keystore fija desde el secreto DEBUG_KEYSTORE_BASE64."
             elif [ -f "debug.keystore.base64" ] && [ -s "debug.keystore.base64" ]; then
-              tr -d '\r\n ' < debug.keystore.base64 | base64 -d > debug.keystore
+              tr -d '\r\n ' < debug.keystore.base64 | base64 -d > raw-debug.keystore
               echo "Usando keystore fija desde debug.keystore.base64 del repositorio."
             else
-              echo "::error::No se encontró la firma fija (debug.keystore.base64 ni el secreto DEBUG_KEYSTORE_BASE64). No se genera una clave aleatoria porque eso obligaría a desinstalar la app en cada actualización. Copiá el contenido de debug.keystore.base64 de AI Studio y guardalo como secreto DEBUG_KEYSTORE_BASE64 en GitHub -> Settings -> Secrets and variables -> Actions."
+              echo "::error::No se encontró la firma fija (secreto DEBUG_KEYSTORE_BASE64). Creá tu firma fija una sola vez y guardala como secreto DEBUG_KEYSTORE_BASE64 en GitHub -> Settings -> Secrets and variables -> Actions."
               exit 1
             fi
-            if [ ! -s "debug.keystore" ]; then
-              echo "::error::No se pudo decodificar debug.keystore. Verificá debug.keystore.base64 o el secreto DEBUG_KEYSTORE_BASE64."
+            if [ ! -s "raw-debug.keystore" ]; then
+              echo "::error::No se pudo decodificar DEBUG_KEYSTORE_BASE64. Verificá que el secreto tenga el base64 completo sin texto extra."
               exit 1
             fi
-            keytool -list -keystore debug.keystore -storepass android -alias androiddebugkey | grep -E "Alias|SHA1|SHA-256|Fingerprint" || true
+            if LC_ALL=C keytool -list -keystore raw-debug.keystore -storepass android -alias androiddebugkey >/dev/null 2>&1; then
+              mv raw-debug.keystore debug.keystore
+            else
+              SRC_ALIAS=$(LC_ALL=C keytool -list -v -keystore raw-debug.keystore -storepass android | awk -F': ' '/^Alias name:/{print $2; exit}')
+              if [ -z "$SRC_ALIAS" ]; then
+                echo "::error::El archivo en DEBUG_KEYSTORE_BASE64 no es un keystore/PFX válido con contraseña 'android'."
+                exit 1
+              fi
+              rm -f debug.keystore
+              LC_ALL=C keytool -importkeystore \
+                -srckeystore raw-debug.keystore -srcstoretype PKCS12 -srcstorepass android -srcalias "$SRC_ALIAS" \
+                -destkeystore debug.keystore -deststoretype PKCS12 -deststorepass android -destalias androiddebugkey -destkeypass android -noprompt
+              rm -f raw-debug.keystore
+            fi
+            LC_ALL=C keytool -list -v -keystore debug.keystore -storepass android -alias androiddebugkey | grep -E "Alias name:|SHA1:|SHA256:" || true
             echo "build_type=debug" >> "$GITHUB_OUTPUT"
           fi
 
