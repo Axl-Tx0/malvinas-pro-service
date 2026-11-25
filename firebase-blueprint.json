@@ -413,6 +413,10 @@
           "type": "integer",
           "description": "Epoch milliseconds of the last verified access."
         },
+        "lastDeviceInfo": {
+          "type": "string",
+          "description": "Device model and Android version from which the user last signed in."
+        },
         "createdBy": {
           "type": "string",
           "description": "Admin Firebase Auth UID who created this record."
@@ -460,6 +464,87 @@
         }
       },
       "required": ["whatsappPhone", "updatedBy", "updatedAt"]
+    },
+    "UserBinding": {
+      "title": "UserBinding",
+      "description": "Maps a signed-in Firebase Auth UID to an Admin-created username/accountId in authorizedUsers.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Signed-in Firebase Auth UID matching the document ID."
+        },
+        "accountId": {
+          "type": "string",
+          "description": "Normalized lowercase username or email ID in authorizedUsers."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": ["uid", "accountId", "updatedAt"]
+    },
+    "PinChallenge": {
+      "title": "PinChallenge",
+      "description": "Hash-only 6-digit random PIN verification challenge for confirming user identity on login (never stores plaintext PIN).",
+      "type": "object",
+      "properties": {
+        "challengeId": { "type": "string" },
+        "accountId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "requesterUid": { "type": "string" },
+        "deviceInfo": { "type": "string" },
+        "pinCode": { "type": "string" },
+        "pinHash": { "type": "string" },
+        "pinSalt": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "verified", "rejected"] },
+        "expiresAt": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "challengeId",
+        "accountId",
+        "displayName",
+        "requesterUid",
+        "pinHash",
+        "pinSalt",
+        "status",
+        "expiresAt",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AdminPinInboxItem": {
+      "title": "AdminPinInboxItem",
+      "description": "Admin-read-only random 6-digit PIN inbox displayed in real time on the Admin device with login device details.",
+      "type": "object",
+      "properties": {
+        "challengeId": { "type": "string" },
+        "accountId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "requesterUid": { "type": "string" },
+        "requesterEmail": { "type": "string" },
+        "deviceInfo": { "type": "string" },
+        "pinCode": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "verified", "rejected"] },
+        "expiresAt": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "challengeId",
+        "accountId",
+        "displayName",
+        "requesterUid",
+        "pinCode",
+        "status",
+        "expiresAt",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -491,9 +576,21 @@
       "schema": { "$ref": "#/entities/AdminSupportContact" },
       "description": "Admin-managed WhatsApp contact number readable by signed-in users on the disabled/unauthorized lock screen."
     },
-    "/authorizedUsers/{emailId}": {
+    "/authorizedUsers/{accountId}": {
       "schema": { "$ref": "#/entities/AuthorizedUser" },
-      "description": "Admin-managed authorized users allowlist and real-time kill switch (enabled/disabled)."
+      "description": "Admin-managed authorized users (by username or email) with PBKDF2 password hash and real-time kill switch."
+    },
+    "/userBindings/{uid}": {
+      "schema": { "$ref": "#/entities/UserBinding" },
+      "description": "Maps a verified Firebase Auth UID to its claimed authorizedUsers accountId."
+    },
+    "/pinChallenges/{challengeId}": {
+      "schema": { "$ref": "#/entities/PinChallenge" },
+      "description": "Hash-only 6-digit PIN login verification challenges."
+    },
+    "/adminPinInbox/{challengeId}": {
+      "schema": { "$ref": "#/entities/AdminPinInboxItem" },
+      "description": "Admin-read-only random 6-digit PINs displayed live to the Admin for user identity verification."
     }
   }
 }

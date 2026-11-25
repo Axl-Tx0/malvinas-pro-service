@@ -75,5 +75,57 @@ class AccessSecurityTest {
     val (wrongMatch, wrongPwd) = PendingLoginCredentials.consumeForEmail("otro@gmail.com")
     assertFalse(wrongMatch)
     assertEquals(null, wrongPwd)
+
+    // Username-based consume() works with @ prefix normalization and wipes after single read
+    PendingLoginCredentials.set("  @Carlos_01  ", "Secreta99")
+    val consumed = PendingLoginCredentials.consume()
+    assertEquals("carlos_01" to "Secreta99", consumed)
+    assertEquals(null, PendingLoginCredentials.consume())
+  }
+
+  @Test
+  fun accessControlConfig_validatesUsernamesAndFormatsPins() {
+    assertEquals("carlos01", AccessControlConfig.normalizeAccountId(" @Carlos01 "))
+    assertTrue(AccessControlConfig.isValidAccountId("carlos01"))
+    assertTrue(AccessControlConfig.isValidAccountId("juan_cba-2"))
+    assertTrue(AccessControlConfig.isValidAccountId("ana.perez@gmail.com"))
+    assertFalse(AccessControlConfig.isValidAccountId("ab"))
+    assertFalse(AccessControlConfig.isValidAccountId("con espacio"))
+    assertFalse(AccessControlConfig.isValidAccountId("mal/ruta"))
+    assertFalse(AccessControlConfig.isValidAccountId("bad..id"))
+
+    assertEquals("482 915", AccessControlConfig.formatPinForDisplay("482915"))
+    assertEquals("001 234", AccessControlConfig.formatPinForDisplay("001-234"))
+  }
+
+  @Test
+  fun generateRandomPin_producesSixNumericDigitsAndHashesCleanly() {
+    val pins = (1..20).map { PasswordHasher.generateRandomPin(6) }
+    pins.forEach { pin ->
+      assertEquals(6, pin.length)
+      assertTrue("PIN must be numeric: $pin", pin.all { it.isDigit() })
+    }
+    assertTrue("Random PINs should vary across calls", pins.toSet().size > 1)
+
+    val pin = pins.first()
+    val hashed = PasswordHasher.hashPassword(pin)
+    assertTrue(PasswordHasher.verifyPassword(pin, hashed.saltHex, hashed.hashHex))
+    assertFalse(PasswordHasher.verifyPassword("999999".takeIf { it != pin } ?: "000000", hashed.saltHex, hashed.hashHex))
+  }
+
+  @Test
+  fun formatDeviceLabel_formatsCleanlyWithoutDuplicateManufacturer() {
+    assertEquals(
+      "Samsung SM-A546E · Android 14",
+      AccessControlConfig.formatDeviceLabel("samsung", "SM-A546E", "14"),
+    )
+    assertEquals(
+      "Google Pixel 8 · Android 15",
+      AccessControlConfig.formatDeviceLabel("Google", "Google Pixel 8", "15"),
+    )
+    assertEquals(
+      "Dispositivo Android",
+      AccessControlConfig.formatDeviceLabel("", "", ""),
+    )
   }
 }

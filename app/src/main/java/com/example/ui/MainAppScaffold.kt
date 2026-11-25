@@ -1,9 +1,13 @@
 package com.example.ui
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,13 +24,19 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.People
+import androidx.compose.material.icons.filled.Pin
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material.icons.filled.Storefront
 import androidx.compose.material.icons.outlined.AccountBalanceWallet
 import androidx.compose.material.icons.outlined.BarChart
@@ -36,6 +46,10 @@ import androidx.compose.material.icons.outlined.Storefront
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -47,9 +61,11 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
@@ -69,8 +85,10 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.credentials.CredentialManager
 import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -83,6 +101,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.example.R
+import com.example.data.model.AdminPinInboxItem
 import com.example.data.model.FinancialTransaction
 import com.example.data.model.Reseller
 import com.example.data.model.UserSettings
@@ -106,6 +125,7 @@ import com.example.ui.screens.VpnScreen
 import com.example.ui.viewmodel.MainViewModel
 import com.example.ui.viewmodel.UiState
 import com.example.data.repository.AccessControlRepository
+import com.example.util.AccessControlConfig
 import com.example.util.AppUpdateHelper
 import com.example.util.CloudBackupHelper
 import com.example.util.GitHubReleaseUpdater
@@ -115,6 +135,7 @@ import com.google.firebase.Firebase
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -224,6 +245,29 @@ fun MainAppScaffold(
     accessControlRepo
       .observeGitHubUpdateRepo()
       .collectAsStateWithLifecycle(initialValue = GitHubReleaseUpdater.DEFAULT_GITHUB_REPO)
+  val pendingAdminPins by
+    remember(isAdmin, accessControlRepo) {
+      if (isAdmin) accessControlRepo.observePendingAdminPins() else flowOf(emptyList())
+    }.collectAsStateWithLifecycle(initialValue = emptyList())
+  val notifiedPinKeys = remember { mutableSetOf<String>() }
+  LaunchedEffect(isAdmin, pendingAdminPins) {
+    if (isAdmin) {
+      pendingAdminPins.forEach { pinItem ->
+        val cid = pinItem.challengeId.ifBlank { pinItem.id }
+        val key = "$cid:${pinItem.pinCode}"
+        if (notifiedPinKeys.add(key)) {
+          VpnNotificationManager.showAdminPinNotification(
+            context = context,
+            challengeId = cid,
+            displayName = pinItem.displayName,
+            accountId = pinItem.accountId,
+            formattedPin = AccessControlConfig.formatPinForDisplay(pinItem.pinCode),
+            deviceInfo = pinItem.deviceInfo,
+          )
+        }
+      }
+    }
+  }
   var githubUpdateState by remember { mutableStateOf<GitHubUpdateUiState>(GitHubUpdateUiState.Idle) }
   var isSavingGitHubRepo by remember { mutableStateOf(false) }
   var dismissedGitHubTag by remember { mutableStateOf<String?>(null) }
@@ -390,10 +434,19 @@ fun MainAppScaffold(
                 onClick = { showAccountDialog = true },
                 modifier = Modifier.testTag("account_menu_button"),
               ) {
-                Icon(
-                  imageVector = Icons.Filled.AccountCircle,
-                  contentDescription = "Cuenta y notificaciones",
-                )
+                if (isAdmin && pendingAdminPins.isNotEmpty()) {
+                  BadgedBox(badge = { Badge { Text("${pendingAdminPins.size}") } }) {
+                    Icon(
+                      imageVector = Icons.Filled.AccountCircle,
+                      contentDescription = "Cuenta, notificaciones y PINes pendientes",
+                    )
+                  }
+                } else {
+                  Icon(
+                    imageVector = Icons.Filled.AccountCircle,
+                    contentDescription = "Cuenta y notificaciones",
+                  )
+                }
               }
             },
             colors =
@@ -508,6 +561,57 @@ fun MainAppScaffold(
           modifier = Modifier.weight(1f).fillMaxHeight(),
           horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+          if (isAdmin && pendingAdminPins.isNotEmpty()) {
+            val latestPin = pendingAdminPins.first()
+            AdminPinLiveBanner(
+              item = latestPin,
+              extraCount = (pendingAdminPins.size - 1).coerceAtLeast(0),
+              onCopyPin = {
+                val clipboard =
+                  context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("PIN Malvinas Pro", latestPin.pinCode))
+                coroutineScope.launch {
+                  snackbarHostState.showSnackbar(
+                    "PIN ${AccessControlConfig.formatPinForDisplay(latestPin.pinCode)} copiado"
+                  )
+                }
+              },
+              onShareWhatsApp = {
+                val formatted = AccessControlConfig.formatPinForDisplay(latestPin.pinCode)
+                val brand = currentSettings.businessName.ifBlank { "Malvinas Pro Service" }
+                val msg =
+                  "🔐 Tu PIN de verificación para $brand (usuario @${latestPin.accountId}): *$formatted*"
+                if (
+                  !WhatsAppHelper.openWhatsApp(
+                    context = context,
+                    rawPhone = "",
+                    message = msg,
+                    defaultCountryCode = currentSettings.defaultCountryCode,
+                  )
+                ) {
+                  coroutineScope.launch {
+                    snackbarHostState.showSnackbar("No se pudo abrir WhatsApp en este dispositivo")
+                  }
+                }
+              },
+              onOpenPanel = { showUserAccessAdminDialog = true },
+              onReject = {
+                val cid = latestPin.challengeId.ifBlank { latestPin.id }
+                coroutineScope.launch {
+                  val res = accessControlRepo.rejectAdminPin(cid)
+                  snackbarHostState.showSnackbar(
+                    if (res.isSuccess) "Ingreso rechazado para @${latestPin.accountId}"
+                    else res.exceptionOrNull()?.localizedMessage ?: "No se pudo rechazar el ingreso"
+                  )
+                }
+              },
+              modifier =
+                Modifier.fillMaxWidth()
+                  .widthIn(max = 720.dp)
+                  .padding(horizontal = 16.dp, vertical = 6.dp),
+            )
+          }
+
           if (currentRoute == ROUTE_OVERVIEW) {
             Column(
               modifier =
@@ -989,5 +1093,152 @@ fun MainAppScaffold(
         }
       },
     )
+  }
+}
+
+@Composable
+private fun AdminPinLiveBanner(
+  item: AdminPinInboxItem,
+  extraCount: Int,
+  onCopyPin: () -> Unit,
+  onShareWhatsApp: () -> Unit,
+  onOpenPanel: () -> Unit,
+  onReject: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val formattedPin = AccessControlConfig.formatPinForDisplay(item.pinCode)
+  Card(
+    modifier = modifier.testTag("admin_live_pin_banner"),
+    shape = MaterialTheme.shapes.large,
+    colors =
+      CardDefaults.cardColors(
+        containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.85f)
+      ),
+    border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.secondary),
+  ) {
+    Column(
+      modifier = Modifier.fillMaxWidth().padding(12.dp),
+      verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Row(
+          modifier = Modifier.weight(1f),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.Pin,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+            modifier = Modifier.size(20.dp),
+          )
+          Column {
+            Text(
+              text =
+                if (extraCount > 0) "PIN de acceso (+$extraCount más)"
+                else "PIN aleatorio de acceso",
+              style = MaterialTheme.typography.labelLarge,
+              fontWeight = FontWeight.Bold,
+              color = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+            Text(
+              text = "${item.displayName} (@${item.accountId})",
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.85f),
+            )
+            if (item.deviceInfo.isNotBlank()) {
+              Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+              ) {
+                Icon(
+                  imageVector = Icons.Filled.Smartphone,
+                  contentDescription = null,
+                  tint = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f),
+                  modifier = Modifier.size(13.dp),
+                )
+                Text(
+                  text = item.deviceInfo,
+                  style = MaterialTheme.typography.labelSmall,
+                  color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.85f),
+                )
+              }
+            }
+          }
+        }
+        Surface(
+          shape = RoundedCornerShape(10.dp),
+          color = MaterialTheme.colorScheme.primary,
+        ) {
+          Text(
+            text = formattedPin,
+            style = MaterialTheme.typography.titleLarge,
+            fontFamily = FontFamily.Monospace,
+            fontWeight = FontWeight.ExtraBold,
+            letterSpacing = 2.sp,
+            color = MaterialTheme.colorScheme.onPrimary,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+          )
+        }
+      }
+
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Button(
+          onClick = onShareWhatsApp,
+          modifier = Modifier.weight(1f).testTag("live_banner_pin_whatsapp"),
+          shape = RoundedCornerShape(10.dp),
+          colors =
+            ButtonDefaults.buttonColors(
+              containerColor = MaterialTheme.colorScheme.tertiary,
+              contentColor = MaterialTheme.colorScheme.onTertiary,
+            ),
+        ) {
+          Icon(
+            imageVector = Icons.AutoMirrored.Filled.Send,
+            contentDescription = null,
+            modifier = Modifier.size(16.dp),
+          )
+          Spacer(modifier = Modifier.width(6.dp))
+          Text("Pasar PIN")
+        }
+        OutlinedButton(
+          onClick = onCopyPin,
+          modifier = Modifier.weight(1f).testTag("live_banner_pin_copy"),
+          shape = RoundedCornerShape(10.dp),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.ContentCopy,
+            contentDescription = null,
+            modifier = Modifier.size(16.dp),
+          )
+          Spacer(modifier = Modifier.width(6.dp))
+          Text("Copiar")
+        }
+        TextButton(
+          onClick = onOpenPanel,
+          modifier = Modifier.testTag("live_banner_open_panel"),
+        ) {
+          Text("Ver")
+        }
+        IconButton(
+          onClick = onReject,
+          modifier = Modifier.testTag("live_banner_reject_pin"),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.Close,
+            contentDescription = "Rechazar solicitud de PIN",
+            tint = MaterialTheme.colorScheme.error,
+          )
+        }
+      }
+    }
   }
 }

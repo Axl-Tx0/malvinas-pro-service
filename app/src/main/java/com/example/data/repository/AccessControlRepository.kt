@@ -4,7 +4,9 @@ import android.content.Context
 import com.example.R
 import com.example.data.firebase.OperationType
 import com.example.data.firebase.handleFirestoreError
+import com.example.data.model.AdminPinInboxItem
 import com.example.data.model.AuthorizedUser
+import com.example.data.model.PinChallenge
 import com.example.util.AccessControlConfig
 import com.example.util.PasswordHasher
 import com.google.firebase.Firebase
@@ -15,6 +17,7 @@ import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.snapshots
+import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -39,7 +42,7 @@ class AccessControlRepository(
 
   private fun requireCurrentUid(): String =
     auth.currentUser?.uid
-      ?: throw IllegalStateException("Debés iniciar sesión con Google primero.")
+      ?: throw IllegalStateException("Debés iniciar sesión primero.")
 
   fun observeAllAuthorizedUsers(): Flow<List<AuthorizedUser>> = flow {
     val path = COLLECTION_NAME
@@ -62,13 +65,13 @@ class AccessControlRepository(
     )
   }
 
-  fun observeAuthorizedUserByEmail(rawEmail: String): Flow<AuthorizedUser?> = flow {
-    val emailId = AccessControlConfig.normalizeEmail(rawEmail)
-    if (!AccessControlConfig.isValidEmailFormat(emailId)) {
+  fun observeAuthorizedUserByAccountId(rawAccountId: String): Flow<AuthorizedUser?> = flow {
+    val accountId = AccessControlConfig.normalizeAccountId(rawAccountId)
+    if (!AccessControlConfig.isValidAccountId(accountId)) {
       emit(null)
       return@flow
     }
-    val docRef = db.collection(COLLECTION_NAME).document(emailId)
+    val docRef = db.collection(COLLECTION_NAME).document(accountId)
     emitAll(
       docRef
         .snapshots()
@@ -86,6 +89,82 @@ class AccessControlRepository(
     )
   }
 
+  fun observeAuthorizedUserByEmail(rawEmail: String): Flow<AuthorizedUser?> =
+    observeAuthorizedUserByAccountId(rawEmail)
+
+  fun observeBoundAccountId(uid: String): Flow<String?> = flow {
+    if (uid.isBlank()) {
+      emit(null)
+      return@flow
+    }
+    val docRef = db.collection(USER_BINDINGS_COLLECTION).document(uid)
+    emitAll(
+      docRef
+        .snapshots()
+        .map { snapshot ->
+          if (snapshot.exists()) {
+            snapshot.getString("accountId")?.trim()?.takeIf { it.isNotBlank() }
+          } else {
+            null
+          }
+        }
+        .catch { error ->
+          logStreamError(error, OperationType.GET, docRef.path)
+          throw error
+        }
+    )
+  }
+
+  suspend fun getAuthorizedUserByAccountId(rawAccountId: String): Result<AuthorizedUser?> {
+    val accountId = AccessControlConfig.normalizeAccountId(rawAccountId)
+    if (!AccessControlConfig.isValidAccountId(accountId)) {
+      return Result.failure(
+        IllegalArgumentException(
+          "Ingresá un usuario válido (mín. 3 caracteres, sin espacios)."
+        )
+      )
+    }
+    val docRef = db.collection(COLLECTION_NAME).document(accountId)
+    return try {
+      val snapshot = docRef.get().await()
+      if (snapshot.exists()) {
+        Result.success(snapshot.toObject(AuthorizedUser::class.java, ServerTimestampBehavior.ESTIMATE))
+      } else {
+        Result.success(null)
+      }
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: FirebaseFirestoreException) {
+      if (e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+        Result.failure(
+          IllegalStateException(
+            "Este usuario ya está vinculado a otro dispositivo. Pedile al administrador que lo desvincule."
+          )
+        )
+      } else {
+        handleFirestoreError(e, OperationType.GET, docRef.path, auth)
+        Result.failure(e)
+      }
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.GET, docRef.path, auth)
+      Result.failure(e)
+    }
+  }
+
+  suspend fun clearCurrentUserBinding(): Result<Unit> {
+    val uid = auth.currentUser?.uid ?: return Result.success(Unit)
+    val docRef = db.collection(USER_BINDINGS_COLLECTION).document(uid)
+    return try {
+      docRef.delete().await()
+      Result.success(Unit)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.DELETE, docRef.path, auth)
+      Result.failure(e)
+    }
+  }
+
   suspend fun createAuthorizedUser(
     displayName: String,
     rawEmail: String,
@@ -93,17 +172,21 @@ class AccessControlRepository(
     notes: String = "",
   ): Result<AuthorizedUser> {
     val adminUid = requireCurrentUid()
-    val emailId = AccessControlConfig.normalizeEmail(rawEmail)
+    val accountId = AccessControlConfig.normalizeAccountId(rawEmail)
     val cleanName = displayName.trim().take(80)
     val cleanNotes = notes.trim().take(200)
 
     if (cleanName.isBlank()) {
-      return Result.failure(IllegalArgumentException("Ingresá un nombre para el usuario."))
+      return Result.failure(IllegalArgumentException("Ingresá un nombre para la persona."))
     }
-    if (!AccessControlConfig.isValidEmailFormat(emailId)) {
-      return Result.failure(IllegalArgumentException("Ingresá un correo electrónico válido."))
+    if (!AccessControlConfig.isValidAccountId(accountId)) {
+      return Result.failure(
+        IllegalArgumentException(
+          "Ingresá un usuario válido (mín. 3 caracteres; solo letras, números, punto, guion o guion bajo, sin espacios)."
+        )
+      )
     }
-    if (AccessControlConfig.isAdminEmail(emailId)) {
+    if (AccessControlConfig.isAdminEmail(accountId)) {
       return Result.failure(
         IllegalArgumentException("Tu correo administrador ya tiene acceso permanente.")
       )
@@ -123,13 +206,13 @@ class AccessControlRepository(
       )
     }
 
-    val docRef = db.collection(COLLECTION_NAME).document(emailId)
+    val docRef = db.collection(COLLECTION_NAME).document(accountId)
     return try {
       val existing = docRef.get().await()
       if (existing.exists()) {
         return Result.failure(
           IllegalStateException(
-            "Ya existe un usuario con ese correo. Podés editarlo o cambiarle la contraseña."
+            "Ya existe un acceso con ese usuario. Podés editarlo o cambiarle la contraseña."
           )
         )
       }
@@ -137,7 +220,7 @@ class AccessControlRepository(
       val hashResult = withContext(Dispatchers.Default) { PasswordHasher.hashPassword(rawPassword) }
       val payload =
         mapOf(
-          "email" to emailId,
+          "email" to accountId,
           "displayName" to cleanName,
           "enabled" to true,
           "passwordHash" to hashResult.hashHex,
@@ -153,8 +236,8 @@ class AccessControlRepository(
       docRef.set(payload).await()
       Result.success(
         AuthorizedUser(
-          id = emailId,
-          email = emailId,
+          id = accountId,
+          email = accountId,
           displayName = cleanName,
           enabled = true,
           passwordHash = hashResult.hashHex,
@@ -176,11 +259,11 @@ class AccessControlRepository(
 
   suspend fun setUserEnabled(rawEmail: String, enabled: Boolean): Result<Unit> {
     requireCurrentUid()
-    val emailId = AccessControlConfig.normalizeEmail(rawEmail)
-    if (!AccessControlConfig.isValidEmailFormat(emailId)) {
-      return Result.failure(IllegalArgumentException("Correo inválido."))
+    val accountId = AccessControlConfig.normalizeAccountId(rawEmail)
+    if (!AccessControlConfig.isValidAccountId(accountId)) {
+      return Result.failure(IllegalArgumentException("Usuario inválido."))
     }
-    val docRef = db.collection(COLLECTION_NAME).document(emailId)
+    val docRef = db.collection(COLLECTION_NAME).document(accountId)
     return try {
       docRef
         .update(
@@ -205,12 +288,12 @@ class AccessControlRepository(
     notes: String,
   ): Result<Unit> {
     requireCurrentUid()
-    val emailId = AccessControlConfig.normalizeEmail(rawEmail)
+    val accountId = AccessControlConfig.normalizeAccountId(rawEmail)
     val cleanName = displayName.trim().take(80)
     if (cleanName.isBlank()) {
       return Result.failure(IllegalArgumentException("El nombre no puede quedar vacío."))
     }
-    val docRef = db.collection(COLLECTION_NAME).document(emailId)
+    val docRef = db.collection(COLLECTION_NAME).document(accountId)
     return try {
       docRef
         .update(
@@ -236,9 +319,9 @@ class AccessControlRepository(
     currentVersion: Long,
   ): Result<Long> {
     requireCurrentUid()
-    val emailId = AccessControlConfig.normalizeEmail(rawEmail)
-    if (!AccessControlConfig.isValidEmailFormat(emailId)) {
-      return Result.failure(IllegalArgumentException("Correo inválido."))
+    val accountId = AccessControlConfig.normalizeAccountId(rawEmail)
+    if (!AccessControlConfig.isValidAccountId(accountId)) {
+      return Result.failure(IllegalArgumentException("Usuario inválido."))
     }
     if (newRawPassword.length < AccessControlConfig.MIN_PASSWORD_LENGTH) {
       return Result.failure(
@@ -255,7 +338,7 @@ class AccessControlRepository(
       )
     }
     val nextVersion = (currentVersion.coerceAtLeast(1L) + 1L).coerceAtMost(1_000_000L)
-    val docRef = db.collection(COLLECTION_NAME).document(emailId)
+    val docRef = db.collection(COLLECTION_NAME).document(accountId)
     return try {
       val hashResult =
         withContext(Dispatchers.Default) { PasswordHasher.hashPassword(newRawPassword) }
@@ -278,10 +361,40 @@ class AccessControlRepository(
     }
   }
 
+  suspend fun unbindAuthorizedUser(
+    rawAccountId: String,
+    currentVersion: Long,
+  ): Result<Long> {
+    requireCurrentUid()
+    val accountId = AccessControlConfig.normalizeAccountId(rawAccountId)
+    if (!AccessControlConfig.isValidAccountId(accountId)) {
+      return Result.failure(IllegalArgumentException("Usuario inválido."))
+    }
+    val nextVersion = (currentVersion.coerceAtLeast(1L) + 1L).coerceAtMost(1_000_000L)
+    val docRef = db.collection(COLLECTION_NAME).document(accountId)
+    return try {
+      docRef
+        .update(
+          mapOf(
+            "boundUid" to "",
+            "passwordVersion" to nextVersion,
+            "updatedAt" to FieldValue.serverTimestamp(),
+          )
+        )
+        .await()
+      Result.success(nextVersion)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.UPDATE, docRef.path, auth)
+      Result.failure(e)
+    }
+  }
+
   suspend fun deleteAuthorizedUser(rawEmail: String): Result<Unit> {
     requireCurrentUid()
-    val emailId = AccessControlConfig.normalizeEmail(rawEmail)
-    val docRef = db.collection(COLLECTION_NAME).document(emailId)
+    val accountId = AccessControlConfig.normalizeAccountId(rawEmail)
+    val docRef = db.collection(COLLECTION_NAME).document(accountId)
     return try {
       docRef.delete().await()
       Result.success(Unit)
@@ -293,19 +406,30 @@ class AccessControlRepository(
     }
   }
 
-  suspend fun recordSelfAccess(rawEmail: String): Result<Unit> {
+  suspend fun recordSelfAccess(rawAccountId: String): Result<Unit> {
     val uid = requireCurrentUid()
-    val emailId = AccessControlConfig.normalizeEmail(rawEmail)
-    if (!AccessControlConfig.isValidEmailFormat(emailId)) {
-      return Result.failure(IllegalArgumentException("Correo inválido."))
+    val accountId = AccessControlConfig.normalizeAccountId(rawAccountId)
+    if (!AccessControlConfig.isValidAccountId(accountId)) {
+      return Result.failure(IllegalArgumentException("Usuario inválido."))
     }
-    val docRef = db.collection(COLLECTION_NAME).document(emailId)
+    val docRef = db.collection(COLLECTION_NAME).document(accountId)
+    val bindingRef = db.collection(USER_BINDINGS_COLLECTION).document(uid)
     return try {
       docRef
         .update(
           mapOf(
             "boundUid" to uid,
             "lastAccessAt" to System.currentTimeMillis(),
+            "lastDeviceInfo" to AccessControlConfig.currentDeviceLabel(),
+            "updatedAt" to FieldValue.serverTimestamp(),
+          )
+        )
+        .await()
+      bindingRef
+        .set(
+          mapOf(
+            "uid" to uid,
+            "accountId" to accountId,
             "updatedAt" to FieldValue.serverTimestamp(),
           )
         )
@@ -315,6 +439,269 @@ class AccessControlRepository(
       throw e
     } catch (e: Exception) {
       handleFirestoreError(e, OperationType.UPDATE, docRef.path, auth)
+      Result.failure(e)
+    }
+  }
+
+  /**
+   * Creates a 6-digit random PIN verification challenge with current device metadata:
+   * - Writes challenge (with deviceInfo, pinCode, and PBKDF2 hash/salt) to `/pinChallenges/{challengeId}`.
+   * - Writes Admin inbox alert (with deviceInfo and pinCode) to `/adminPinInbox/{challengeId}` (Admin-read ONLY).
+   * - Returns (challengeId to pinCode) so the user sees the random PIN above the PIN input immediately.
+   */
+  suspend fun createPinChallengeForUser(
+    rawAccountId: String,
+    displayName: String,
+    requesterEmail: String?,
+  ): Result<Pair<String, String>> {
+    val uid = requireCurrentUid()
+    val accountId = AccessControlConfig.normalizeAccountId(rawAccountId)
+    if (!AccessControlConfig.isValidAccountId(accountId)) {
+      return Result.failure(IllegalArgumentException("Usuario inválido."))
+    }
+    val cleanName = displayName.trim().ifBlank { accountId }.take(80)
+    val cleanEmail = requesterEmail.orEmpty().trim().take(128)
+    val deviceInfo = AccessControlConfig.currentDeviceLabel()
+    val challengeId = "pin_${UUID.randomUUID().toString().replace("-", "")}"
+    val expiresAt = System.currentTimeMillis() + AccessControlConfig.PIN_TTL_MILLIS
+
+    val challengeRef = db.collection(PIN_CHALLENGES_COLLECTION).document(challengeId)
+    val inboxRef = db.collection(ADMIN_PIN_INBOX_COLLECTION).document(challengeId)
+
+    return try {
+      val (pinCode, hashResult) =
+        withContext(Dispatchers.Default) {
+          val generatedPin = PasswordHasher.generateRandomPin(AccessControlConfig.PIN_LENGTH)
+          val hashed = PasswordHasher.hashPassword(generatedPin)
+          generatedPin to hashed
+        }
+
+      val challengePayload =
+        mapOf(
+          "challengeId" to challengeId,
+          "accountId" to accountId,
+          "displayName" to cleanName,
+          "requesterUid" to uid,
+          "deviceInfo" to deviceInfo,
+          "pinCode" to pinCode,
+          "pinHash" to hashResult.hashHex,
+          "pinSalt" to hashResult.saltHex,
+          "status" to PinChallenge.STATUS_PENDING,
+          "expiresAt" to expiresAt,
+          "createdAt" to FieldValue.serverTimestamp(),
+          "updatedAt" to FieldValue.serverTimestamp(),
+        )
+      val inboxPayload =
+        mapOf(
+          "challengeId" to challengeId,
+          "accountId" to accountId,
+          "displayName" to cleanName,
+          "requesterUid" to uid,
+          "requesterEmail" to cleanEmail,
+          "deviceInfo" to deviceInfo,
+          "pinCode" to pinCode,
+          "status" to PinChallenge.STATUS_PENDING,
+          "expiresAt" to expiresAt,
+          "createdAt" to FieldValue.serverTimestamp(),
+          "updatedAt" to FieldValue.serverTimestamp(),
+        )
+
+      challengeRef.set(challengePayload).await()
+      inboxRef.set(inboxPayload).await()
+      Result.success(challengeId to pinCode)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.CREATE, challengeRef.path, auth)
+      Result.failure(e)
+    }
+  }
+
+  fun observePinChallenge(challengeId: String): Flow<PinChallenge?> = flow {
+    if (challengeId.isBlank()) {
+      emit(null)
+      return@flow
+    }
+    val docRef = db.collection(PIN_CHALLENGES_COLLECTION).document(challengeId)
+    emitAll(
+      docRef
+        .snapshots()
+        .map { snapshot ->
+          if (snapshot.exists()) {
+            snapshot.toObject(PinChallenge::class.java, ServerTimestampBehavior.ESTIMATE)
+          } else {
+            null
+          }
+        }
+        .catch { error ->
+          logStreamError(error, OperationType.GET, docRef.path)
+          throw error
+        }
+    )
+  }
+
+  suspend fun completePinVerification(
+    challengeId: String,
+    rawAccountId: String,
+  ): Result<Unit> {
+    val uid = requireCurrentUid()
+    val accountId = AccessControlConfig.normalizeAccountId(rawAccountId)
+    if (challengeId.isBlank() || !AccessControlConfig.isValidAccountId(accountId)) {
+      return Result.failure(IllegalArgumentException("Datos de verificación inválidos."))
+    }
+    val challengeRef = db.collection(PIN_CHALLENGES_COLLECTION).document(challengeId)
+    val inboxRef = db.collection(ADMIN_PIN_INBOX_COLLECTION).document(challengeId)
+    val userRef = db.collection(COLLECTION_NAME).document(accountId)
+    val bindingRef = db.collection(USER_BINDINGS_COLLECTION).document(uid)
+
+    return try {
+      challengeRef
+        .update(
+          mapOf(
+            "status" to PinChallenge.STATUS_VERIFIED,
+            "updatedAt" to FieldValue.serverTimestamp(),
+          )
+        )
+        .await()
+
+      userRef
+        .update(
+          mapOf(
+            "boundUid" to uid,
+            "lastAccessAt" to System.currentTimeMillis(),
+            "lastDeviceInfo" to AccessControlConfig.currentDeviceLabel(),
+            "updatedAt" to FieldValue.serverTimestamp(),
+          )
+        )
+        .await()
+
+      bindingRef
+        .set(
+          mapOf(
+            "uid" to uid,
+            "accountId" to accountId,
+            "updatedAt" to FieldValue.serverTimestamp(),
+          )
+        )
+        .await()
+
+      // Best-effort cleanup of Admin's pending inbox entry now that the user verified
+      runCatching { inboxRef.delete().await() }
+      Result.success(Unit)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.UPDATE, challengeRef.path, auth)
+      Result.failure(e)
+    }
+  }
+
+  suspend fun cancelPinChallenge(challengeId: String) {
+    if (challengeId.isBlank()) return
+    runCatching { db.collection(PIN_CHALLENGES_COLLECTION).document(challengeId).delete().await() }
+    runCatching { db.collection(ADMIN_PIN_INBOX_COLLECTION).document(challengeId).delete().await() }
+  }
+
+  // --- Admin-only PIN Inbox Operations ---
+
+  fun observePendingAdminPins(): Flow<List<AdminPinInboxItem>> = flow {
+    val path = ADMIN_PIN_INBOX_COLLECTION
+    emitAll(
+      db.collection(ADMIN_PIN_INBOX_COLLECTION)
+        .snapshots()
+        .map { snapshot ->
+          val now = System.currentTimeMillis()
+          snapshot
+            .toObjects(AdminPinInboxItem::class.java, ServerTimestampBehavior.ESTIMATE)
+            .filter { item ->
+              item.status == PinChallenge.STATUS_PENDING &&
+                item.pinCode.length == AccessControlConfig.PIN_LENGTH &&
+                (item.expiresAt == 0L || item.expiresAt > now)
+            }
+            .sortedByDescending { it.createdAt?.toDate()?.time ?: it.expiresAt }
+        }
+        .catch { error ->
+          logStreamError(error, OperationType.LIST, path)
+          emit(emptyList())
+        }
+    )
+  }
+
+  suspend fun regenerateAdminPin(item: AdminPinInboxItem): Result<String> {
+    requireCurrentUid()
+    val challengeId = item.challengeId.ifBlank { item.id }
+    if (challengeId.isBlank()) {
+      return Result.failure(IllegalArgumentException("Solicitud de PIN inválida."))
+    }
+    val newExpiresAt = System.currentTimeMillis() + AccessControlConfig.PIN_TTL_MILLIS
+    val challengeRef = db.collection(PIN_CHALLENGES_COLLECTION).document(challengeId)
+    val inboxRef = db.collection(ADMIN_PIN_INBOX_COLLECTION).document(challengeId)
+
+    return try {
+      val (newPin, hashResult) =
+        withContext(Dispatchers.Default) {
+          val generatedPin = PasswordHasher.generateRandomPin(AccessControlConfig.PIN_LENGTH)
+          val hashed = PasswordHasher.hashPassword(generatedPin)
+          generatedPin to hashed
+        }
+
+      challengeRef
+        .update(
+          mapOf(
+            "pinCode" to newPin,
+            "pinHash" to hashResult.hashHex,
+            "pinSalt" to hashResult.saltHex,
+            "status" to PinChallenge.STATUS_PENDING,
+            "expiresAt" to newExpiresAt,
+            "updatedAt" to FieldValue.serverTimestamp(),
+          )
+        )
+        .await()
+
+      inboxRef
+        .update(
+          mapOf(
+            "pinCode" to newPin,
+            "status" to PinChallenge.STATUS_PENDING,
+            "expiresAt" to newExpiresAt,
+            "updatedAt" to FieldValue.serverTimestamp(),
+          )
+        )
+        .await()
+
+      Result.success(newPin)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.UPDATE, inboxRef.path, auth)
+      Result.failure(e)
+    }
+  }
+
+  suspend fun rejectAdminPin(challengeId: String): Result<Unit> {
+    requireCurrentUid()
+    if (challengeId.isBlank()) {
+      return Result.failure(IllegalArgumentException("Solicitud de PIN inválida."))
+    }
+    val challengeRef = db.collection(PIN_CHALLENGES_COLLECTION).document(challengeId)
+    val inboxRef = db.collection(ADMIN_PIN_INBOX_COLLECTION).document(challengeId)
+    return try {
+      runCatching {
+        challengeRef
+          .update(
+            mapOf(
+              "status" to PinChallenge.STATUS_REJECTED,
+              "updatedAt" to FieldValue.serverTimestamp(),
+            )
+          )
+          .await()
+      }
+      inboxRef.delete().await()
+      Result.success(Unit)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.DELETE, inboxRef.path, auth)
       Result.failure(e)
     }
   }
@@ -428,6 +815,9 @@ class AccessControlRepository(
 
   companion object {
     const val COLLECTION_NAME = "authorizedUsers"
+    const val USER_BINDINGS_COLLECTION = "userBindings"
+    const val PIN_CHALLENGES_COLLECTION = "pinChallenges"
+    const val ADMIN_PIN_INBOX_COLLECTION = "adminPinInbox"
     const val APP_CONFIG_COLLECTION = "appConfig"
     const val SUPPORT_DOC_ID = "support"
     const val UPDATES_DOC_ID = "updates"

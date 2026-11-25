@@ -27,20 +27,37 @@ service cloud.firestore {
              request.auth.token.email.lower() == 'axeldelvalle737@gmail.com';
     }
 
-    function isValidEmailDocId(id) {
+    function isValidAccountDocId(id) {
       return id is string &&
              id.size() >= 3 &&
              id.size() <= 128 &&
              id == id.lower() &&
-             id.matches('^[^/\\s@]+@[^/\\s@]+\\.[^/\\s@]+$');
+             id.matches('^[a-z0-9._@\\-]+$') &&
+             !id.matches('.*\\.\\..*');
+    }
+
+    function isBoundActiveUser() {
+      return isSignedIn() &&
+             exists(/databases/$(database)/documents/userBindings/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/userBindings/$(request.auth.uid)).data.accountId is string &&
+             exists(/databases/$(database)/documents/authorizedUsers/$(get(/databases/$(database)/documents/userBindings/$(request.auth.uid)).data.accountId)) &&
+             get(/databases/$(database)/documents/authorizedUsers/$(get(/databases/$(database)/documents/userBindings/$(request.auth.uid)).data.accountId)).data.enabled == true &&
+             get(/databases/$(database)/documents/authorizedUsers/$(get(/databases/$(database)/documents/userBindings/$(request.auth.uid)).data.accountId)).data.boundUid == request.auth.uid;
+    }
+
+    function isLegacyEmailActiveUser() {
+      return hasVerifiedEmail() &&
+             exists(/databases/$(database)/documents/authorizedUsers/$(request.auth.token.email.lower())) &&
+             get(/databases/$(database)/documents/authorizedUsers/$(request.auth.token.email.lower())).data.enabled == true &&
+             (
+               !('boundUid' in get(/databases/$(database)/documents/authorizedUsers/$(request.auth.token.email.lower())).data) ||
+               get(/databases/$(database)/documents/authorizedUsers/$(request.auth.token.email.lower())).data.boundUid == '' ||
+               get(/databases/$(database)/documents/authorizedUsers/$(request.auth.token.email.lower())).data.boundUid == request.auth.uid
+             );
     }
 
     function isAuthorizedActiveUser() {
-      return isAdmin() || (
-        hasVerifiedEmail() &&
-        exists(/databases/$(database)/documents/authorizedUsers/$(request.auth.token.email.lower())) &&
-        get(/databases/$(database)/documents/authorizedUsers/$(request.auth.token.email.lower())).data.enabled == true
-      );
+      return isAdmin() || isBoundActiveUser() || isLegacyEmailActiveUser();
     }
 
     function isActiveOwner(userId) {
@@ -129,9 +146,9 @@ service cloud.firestore {
              data.autoRecordIncomeOnPay is bool;
     }
 
-    function isValidAuthorizedUser(data, emailId) {
-      return data.email is string && data.email == emailId &&
-             isValidEmailDocId(data.email) &&
+    function isValidAuthorizedUser(data, accountId) {
+      return data.email is string && data.email == accountId &&
+             isValidAccountDocId(data.email) &&
              data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
              data.enabled is bool &&
              data.passwordHash is string && data.passwordHash.size() == 64 &&
@@ -140,19 +157,62 @@ service cloud.firestore {
              (!('notes' in data) || (data.notes is string && data.notes.size() <= 200)) &&
              (!('boundUid' in data) || (data.boundUid is string && data.boundUid.size() <= 128)) &&
              (!('lastAccessAt' in data) || (data.lastAccessAt is int && data.lastAccessAt >= 0)) &&
+             (!('lastDeviceInfo' in data) || (data.lastDeviceInfo is string && data.lastDeviceInfo.size() <= 120)) &&
              data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128;
     }
 
-    // --- Admin-Managed Authorized Users (Access Control & Instant Disable) ---
-    match /authorizedUsers/{emailId} {
+    function isAccountClaimableByCaller(accountId) {
+      return exists(/databases/$(database)/documents/authorizedUsers/$(accountId)) &&
+             get(/databases/$(database)/documents/authorizedUsers/$(accountId)).data.enabled == true &&
+             (
+               !('boundUid' in get(/databases/$(database)/documents/authorizedUsers/$(accountId)).data) ||
+               get(/databases/$(database)/documents/authorizedUsers/$(accountId)).data.boundUid == '' ||
+               get(/databases/$(database)/documents/authorizedUsers/$(accountId)).data.boundUid == request.auth.uid
+             );
+    }
+
+    function isValidPinChallenge(data, challengeId) {
+      return data.challengeId is string && data.challengeId == challengeId &&
+             isValidAccountDocId(data.accountId) &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
+             data.requesterUid is string && data.requesterUid.size() >= 1 && data.requesterUid.size() <= 128 &&
+             (!('deviceInfo' in data) || (data.deviceInfo is string && data.deviceInfo.size() <= 120)) &&
+             (!('pinCode' in data) || (data.pinCode is string && data.pinCode.matches('^[0-9]{6}$'))) &&
+             data.pinHash is string && data.pinHash.size() == 64 &&
+             data.pinSalt is string && data.pinSalt.size() == 32 &&
+             data.status is string && (data.status == 'pending' || data.status == 'verified' || data.status == 'rejected') &&
+             data.expiresAt is int && data.expiresAt > 0;
+    }
+
+    function isValidAdminPinInbox(data, challengeId) {
+      return data.challengeId is string && data.challengeId == challengeId &&
+             isValidAccountDocId(data.accountId) &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
+             data.requesterUid is string && data.requesterUid.size() >= 1 && data.requesterUid.size() <= 128 &&
+             (!('requesterEmail' in data) || (data.requesterEmail is string && data.requesterEmail.size() <= 128)) &&
+             (!('deviceInfo' in data) || (data.deviceInfo is string && data.deviceInfo.size() <= 120)) &&
+             data.pinCode is string && data.pinCode.matches('^[0-9]{6}$') &&
+             data.status is string && (data.status == 'pending' || data.status == 'verified' || data.status == 'rejected') &&
+             data.expiresAt is int && data.expiresAt > 0;
+    }
+
+    // --- Admin-Managed Authorized Users (Username or Email + Password + Kill Switch) ---
+    match /authorizedUsers/{accountId} {
       allow list: if isAdmin();
       allow get: if isAdmin() || (
-        hasVerifiedEmail() &&
-        request.auth.token.email.lower() == emailId
+        isSignedIn() &&
+        isValidAccountDocId(accountId) &&
+        (
+          resource == null ||
+          !('boundUid' in resource.data) ||
+          resource.data.boundUid == '' ||
+          resource.data.boundUid == request.auth.uid ||
+          (hasVerifiedEmail() && request.auth.token.email.lower() == accountId)
+        )
       );
 
       allow create: if isAdmin() &&
-                       isValidEmailDocId(emailId) &&
+                       isValidAccountDocId(accountId) &&
                        incoming().keys().hasAll([
                          'email', 'displayName', 'enabled', 'passwordHash',
                          'passwordSalt', 'passwordVersion', 'createdBy',
@@ -161,15 +221,15 @@ service cloud.firestore {
                        incoming().keys().hasOnly([
                          'email', 'displayName', 'enabled', 'passwordHash',
                          'passwordSalt', 'passwordVersion', 'notes', 'boundUid',
-                         'lastAccessAt', 'createdBy', 'createdAt', 'updatedAt'
+                         'lastAccessAt', 'lastDeviceInfo', 'createdBy', 'createdAt', 'updatedAt'
                        ]) &&
                        incoming().createdBy == request.auth.uid &&
                        incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
                        incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
-                       isValidAuthorizedUser(incoming(), emailId);
+                       isValidAuthorizedUser(incoming(), accountId);
 
-      allow update: if isValidEmailDocId(emailId) &&
-                       isValidAuthorizedUser(incoming(), emailId) &&
+      allow update: if isValidAccountDocId(accountId) &&
+                       isValidAuthorizedUser(incoming(), accountId) &&
                        incoming().email == existing().email &&
                        incoming().createdBy == existing().createdBy &&
                        incoming().createdAt == existing().createdAt &&
@@ -179,20 +239,128 @@ service cloud.firestore {
                            isAdmin() &&
                            incoming().diff(existing()).affectedKeys().hasOnly([
                              'displayName', 'enabled', 'passwordHash', 'passwordSalt',
-                             'passwordVersion', 'notes', 'updatedAt'
+                             'passwordVersion', 'notes', 'boundUid', 'lastDeviceInfo', 'updatedAt'
                            ])
                          ) || (
-                           hasVerifiedEmail() &&
-                           request.auth.token.email.lower() == emailId &&
+                           isSignedIn() &&
                            existing().enabled == true &&
+                           (
+                             !('boundUid' in existing()) ||
+                             existing().boundUid == '' ||
+                             existing().boundUid == request.auth.uid
+                           ) &&
                            incoming().boundUid == request.auth.uid &&
                            incoming().diff(existing()).affectedKeys().hasOnly([
-                             'boundUid', 'lastAccessAt', 'updatedAt'
+                             'boundUid', 'lastAccessAt', 'lastDeviceInfo', 'updatedAt'
                            ])
                          )
                        );
 
-      allow delete: if isAdmin() && isValidEmailDocId(emailId);
+      allow delete: if isAdmin() && isValidAccountDocId(accountId);
+    }
+
+    // --- Device Session Binding (/userBindings/{uid} -> authorizedUsers/{accountId}) ---
+    match /userBindings/{uid} {
+      allow list: if isAdmin();
+      allow get: if isAdmin() || isOwner(uid);
+      allow create, update: if isOwner(uid) &&
+                               incoming().keys().hasAll(['uid', 'accountId', 'updatedAt']) &&
+                               incoming().keys().hasOnly(['uid', 'accountId', 'updatedAt']) &&
+                               incoming().uid == uid &&
+                               isValidAccountDocId(incoming().accountId) &&
+                               incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                               exists(/databases/$(database)/documents/authorizedUsers/$(incoming().accountId)) &&
+                               get(/databases/$(database)/documents/authorizedUsers/$(incoming().accountId)).data.enabled == true &&
+                               get(/databases/$(database)/documents/authorizedUsers/$(incoming().accountId)).data.boundUid == uid;
+      allow delete: if isAdmin() || isOwner(uid);
+    }
+
+    // --- PIN Verification Challenges (Requester + Admin readable, includes device info) ---
+    match /pinChallenges/{challengeId} {
+      allow list: if isAdmin();
+      allow get: if isAdmin() || (isSignedIn() && existing().requesterUid == request.auth.uid);
+
+      allow create: if isSignedIn() &&
+                       isValidId(challengeId) &&
+                       incoming().keys().hasAll([
+                         'challengeId', 'accountId', 'displayName', 'requesterUid',
+                         'pinHash', 'pinSalt', 'status', 'expiresAt', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'challengeId', 'accountId', 'displayName', 'requesterUid',
+                         'deviceInfo', 'pinCode', 'pinHash', 'pinSalt', 'status',
+                         'expiresAt', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().requesterUid == request.auth.uid &&
+                       incoming().status == 'pending' &&
+                       incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                       isValidPinChallenge(incoming(), challengeId) &&
+                       isAccountClaimableByCaller(incoming().accountId);
+
+      allow update: if isValidId(challengeId) &&
+                       isValidPinChallenge(incoming(), challengeId) &&
+                       incoming().challengeId == existing().challengeId &&
+                       incoming().accountId == existing().accountId &&
+                       incoming().displayName == existing().displayName &&
+                       incoming().requesterUid == existing().requesterUid &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                       (
+                         (
+                           isAdmin() &&
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'pinCode', 'pinHash', 'pinSalt', 'status', 'expiresAt', 'updatedAt'
+                           ])
+                         ) || (
+                           isSignedIn() &&
+                           existing().requesterUid == request.auth.uid &&
+                           existing().status == 'pending' &&
+                           incoming().status == 'verified' &&
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'status', 'updatedAt'
+                           ])
+                         )
+                       );
+
+      allow delete: if isAdmin() || (isSignedIn() && existing().requesterUid == request.auth.uid);
+    }
+
+    // --- Admin-Only Random PIN Inbox (Users CANNOT read or list) ---
+    match /adminPinInbox/{challengeId} {
+      allow list, get: if isAdmin();
+
+      allow create: if isSignedIn() &&
+                       isValidId(challengeId) &&
+                       incoming().keys().hasAll([
+                         'challengeId', 'accountId', 'displayName', 'requesterUid',
+                         'pinCode', 'status', 'expiresAt', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'challengeId', 'accountId', 'displayName', 'requesterUid',
+                         'requesterEmail', 'deviceInfo', 'pinCode', 'status',
+                         'expiresAt', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().requesterUid == request.auth.uid &&
+                       incoming().status == 'pending' &&
+                       incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                       isValidAdminPinInbox(incoming(), challengeId) &&
+                       isAccountClaimableByCaller(incoming().accountId);
+
+      allow update: if isAdmin() &&
+                       isValidId(challengeId) &&
+                       isValidAdminPinInbox(incoming(), challengeId) &&
+                       incoming().challengeId == existing().challengeId &&
+                       incoming().accountId == existing().accountId &&
+                       incoming().requesterUid == existing().requesterUid &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'pinCode', 'status', 'expiresAt', 'updatedAt'
+                       ]);
+
+      allow delete: if isAdmin() || (isSignedIn() && existing().requesterUid == request.auth.uid);
     }
 
     // --- User-Scoped Collections (Enforces Active Authorization) ---

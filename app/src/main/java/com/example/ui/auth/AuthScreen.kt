@@ -24,8 +24,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Login
-import androidx.compose.material.icons.filled.AlternateEmail
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -97,18 +97,18 @@ fun AuthScreen(
 
   val startCredentialsLogin: () -> Unit = {
     if (!isLoading) {
-      val normalizedEmail = AccessControlConfig.normalizeEmail(emailInput)
+      val normalizedAccount = AccessControlConfig.normalizeAccountId(emailInput)
       when {
-        !AccessControlConfig.isValidEmailFormat(normalizedEmail) -> {
-          errorMessage = "Ingresá un usuario (correo electrónico) válido."
+        !AccessControlConfig.isValidAccountId(normalizedAccount) -> {
+          errorMessage = "Ingresá un usuario válido (mín. 3 caracteres, sin espacios)."
         }
-        !AccessControlConfig.isAdminEmail(normalizedEmail) && passwordInput.isBlank() -> {
+        !AccessControlConfig.isAdminEmail(normalizedAccount) && passwordInput.isBlank() -> {
           errorMessage = "Ingresá la contraseña que te compartió el administrador."
         }
         else -> {
           errorMessage = null
-          if (!AccessControlConfig.isAdminEmail(normalizedEmail)) {
-            PendingLoginCredentials.set(normalizedEmail, passwordInput)
+          if (!AccessControlConfig.isAdminEmail(normalizedAccount)) {
+            PendingLoginCredentials.set(normalizedAccount, passwordInput)
           } else {
             PendingLoginCredentials.clear()
           }
@@ -252,7 +252,8 @@ fun AuthScreen(
               color = MaterialTheme.colorScheme.onSurface,
             )
             Text(
-              text = "Ingresá tu usuario (correo) y contraseña para entrar a la aplicación.",
+              text =
+                "Ingresá tu usuario y contraseña. Para confirmar que sos vos, el administrador verá un PIN aleatorio de 6 dígitos.",
               style = MaterialTheme.typography.bodySmall,
               color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -265,17 +266,17 @@ fun AuthScreen(
                   errorMessage = null
                 }
               },
-              label = { Text("Usuario (correo)") },
-              placeholder = { Text("ejemplo@gmail.com") },
+              label = { Text("Usuario") },
+              placeholder = { Text("Ej: carlos01") },
               leadingIcon = {
                 Icon(
-                  imageVector = Icons.Filled.AlternateEmail,
+                  imageVector = Icons.Filled.Person,
                   contentDescription = null,
                 )
               },
               keyboardOptions =
                 KeyboardOptions(
-                  keyboardType = KeyboardType.Email,
+                  keyboardType = KeyboardType.Text,
                   imeAction = ImeAction.Next,
                 ),
               singleLine = true,
@@ -425,7 +426,7 @@ fun AuthScreen(
 
         Text(
           text =
-            "Al ingresar se valida tu cuenta de Google autorizada junto con tu contraseña de acceso.",
+            "Al ingresar con tu usuario y contraseña, el administrador recibe un PIN aleatorio de 6 dígitos para verificar tu identidad.",
           style = MaterialTheme.typography.bodySmall,
           color = MaterialTheme.colorScheme.onSurfaceVariant,
           textAlign = TextAlign.Center,

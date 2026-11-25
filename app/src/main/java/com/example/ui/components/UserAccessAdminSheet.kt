@@ -29,12 +29,17 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.PersonAdd
+import androidx.compose.material.icons.filled.Pin
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -72,8 +77,10 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.example.data.model.AdminPinInboxItem
 import com.example.data.model.AuthorizedUser
 import com.example.data.repository.AccessControlRepository
 import com.example.util.AccessControlConfig
@@ -123,6 +130,11 @@ fun UserAccessAdminDialog(
             )
         }
         .collect { list -> value = AdminUsersUiState.Ready(list) }
+    }
+
+  val pendingPins by
+    produceState<List<AdminPinInboxItem>>(initialValue = emptyList(), key1 = accessRepo) {
+      accessRepo.observePendingAdminPins().collect { pins -> value = pins }
     }
 
   val savedAdminPhone by
@@ -225,6 +237,74 @@ fun UserAccessAdminDialog(
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 96.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
           ) {
+            if (pendingPins.isNotEmpty()) {
+              item(key = "pending_pins_header") {
+                AdminPendingPinsCard(
+                  pendingPins = pendingPins,
+                  businessName = businessName,
+                  defaultCountryCode = defaultCountryCode,
+                  onCopyPin = { item ->
+                    val clipboard =
+                      context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("PIN Malvinas Pro", item.pinCode))
+                    coroutineScope.launch {
+                      snackbarHostState.showSnackbar(
+                        "PIN ${AccessControlConfig.formatPinForDisplay(item.pinCode)} copiado"
+                      )
+                    }
+                  },
+                  onSharePinWhatsApp = { item ->
+                    val formatted = AccessControlConfig.formatPinForDisplay(item.pinCode)
+                    val appBrand = businessName.ifBlank { "Malvinas Pro Service" }
+                    val msg =
+                      "🔐 Tu PIN de verificación para $appBrand (usuario @${item.accountId}): *$formatted*"
+                    val opened =
+                      WhatsAppHelper.openWhatsApp(
+                        context = context,
+                        rawPhone = "",
+                        message = msg,
+                        defaultCountryCode = defaultCountryCode,
+                      )
+                    if (!opened) {
+                      coroutineScope.launch {
+                        snackbarHostState.showSnackbar(
+                          "No se pudo abrir WhatsApp en este dispositivo"
+                        )
+                      }
+                    }
+                  },
+                  onRegeneratePin = { item ->
+                    coroutineScope.launch {
+                      val res = accessRepo.regenerateAdminPin(item)
+                      res.fold(
+                        onSuccess = { newPin ->
+                          snackbarHostState.showSnackbar(
+                            "Nuevo PIN generado: ${AccessControlConfig.formatPinForDisplay(newPin)}"
+                          )
+                        },
+                        onFailure = { err ->
+                          snackbarHostState.showSnackbar(
+                            err.localizedMessage ?: "No se pudo generar un nuevo PIN."
+                          )
+                        },
+                      )
+                    }
+                  },
+                  onRejectPin = { item ->
+                    val cid = item.challengeId.ifBlank { item.id }
+                    coroutineScope.launch {
+                      val res = accessRepo.rejectAdminPin(cid)
+                      snackbarHostState.showSnackbar(
+                        if (res.isSuccess) "Ingreso rechazado para @${item.accountId}"
+                        else res.exceptionOrNull()?.localizedMessage
+                          ?: "No se pudo rechazar el ingreso."
+                      )
+                    }
+                  },
+                )
+              }
+            }
+
             item {
               Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -249,14 +329,14 @@ fun UserAccessAdminDialog(
                       tint = MaterialTheme.colorScheme.primary,
                     )
                     Text(
-                      text = "Control de acceso en tiempo real",
+                      text = "Control de acceso + PIN aleatorio",
                       style = MaterialTheme.typography.titleMedium,
                       fontWeight = FontWeight.Bold,
                     )
                   }
                   Text(
                     text =
-                      "Creá un usuario con su correo de Google y una contraseña. Al compartirle los datos podrá ingresar; si apagás su interruptor, la app se bloquea al instante.",
+                      "Creá cuentas con usuario y contraseña (sin correo obligatorio). Al ingresar, acá te aparecerá un PIN aleatorio de 6 dígitos para confirmar que es la persona correcta.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                   )
@@ -279,10 +359,14 @@ fun UserAccessAdminDialog(
                       modifier = Modifier.weight(1f),
                     )
                     AdminMetricPill(
-                      label = "Bloqueados",
-                      value = "$disabledCount",
-                      containerColor = MaterialTheme.colorScheme.errorContainer,
-                      contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                      label = "PIN activos",
+                      value = "${pendingPins.size}",
+                      containerColor =
+                        if (pendingPins.isNotEmpty()) MaterialTheme.colorScheme.secondaryContainer
+                        else MaterialTheme.colorScheme.errorContainer,
+                      contentColor =
+                        if (pendingPins.isNotEmpty()) MaterialTheme.colorScheme.onSecondaryContainer
+                        else MaterialTheme.colorScheme.onErrorContainer,
                       modifier = Modifier.weight(1f),
                     )
                   }
@@ -444,7 +528,7 @@ fun UserAccessAdminDialog(
                     )
                     Text(
                       text =
-                        "Tocá 'Crear usuario' para generar un acceso con correo y contraseña y compartirlo con otra persona.",
+                        "Tocá 'Crear usuario' para generar un acceso con usuario y contraseña. Cuando ingrese, verás su PIN de 6 dígitos en tiempo real.",
                       style = MaterialTheme.typography.bodySmall,
                       color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -473,6 +557,19 @@ fun UserAccessAdminDialog(
                     }
                   },
                   onResetPassword = { resetPasswordTarget = user },
+                  onUnbindDevice = {
+                    coroutineScope.launch {
+                      val res = accessRepo.unbindAuthorizedUser(user.email, user.passwordVersion)
+                      snackbarHostState.showSnackbar(
+                        if (res.isSuccess) {
+                          "Dispositivo desvinculado · ${user.displayName} deberá verificar con nuevo PIN"
+                        } else {
+                          res.exceptionOrNull()?.localizedMessage
+                            ?: "No se pudo desvincular el dispositivo."
+                        }
+                      )
+                    }
+                  },
                   onEdit = { editingUser = user },
                   onDelete = { deleteTarget = user },
                 )
@@ -662,10 +759,195 @@ private fun AdminMetricPill(
 }
 
 @Composable
+private fun AdminPendingPinsCard(
+  pendingPins: List<AdminPinInboxItem>,
+  businessName: String,
+  defaultCountryCode: String,
+  onCopyPin: (AdminPinInboxItem) -> Unit,
+  onSharePinWhatsApp: (AdminPinInboxItem) -> Unit,
+  onRegeneratePin: (AdminPinInboxItem) -> Unit,
+  onRejectPin: (AdminPinInboxItem) -> Unit,
+) {
+  Card(
+    modifier = Modifier.fillMaxWidth().testTag("admin_pending_pins_section"),
+    shape = MaterialTheme.shapes.large,
+    colors =
+      CardDefaults.cardColors(
+        containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f)
+      ),
+    border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.secondary),
+  ) {
+    Column(
+      modifier = Modifier.fillMaxWidth().padding(14.dp),
+      verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
+        Icon(
+          imageVector = Icons.Filled.Pin,
+          contentDescription = null,
+          tint = MaterialTheme.colorScheme.onSecondaryContainer,
+        )
+        Text(
+          text = "PINes de verificación pendientes (${pendingPins.size})",
+          style = MaterialTheme.typography.titleMedium,
+          fontWeight = FontWeight.Bold,
+          color = MaterialTheme.colorScheme.onSecondaryContainer,
+        )
+      }
+      Text(
+        text =
+          "Solo vos podés ver estos PINes aleatorios. Pasáselo a la persona para confirmar que es ella o rechazá el intento si no la reconocés.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.85f),
+      )
+
+      pendingPins.forEach { item ->
+        val formattedPin = AccessControlConfig.formatPinForDisplay(item.pinCode)
+        Surface(
+          modifier = Modifier.fillMaxWidth().testTag("admin_pin_card_${item.accountId}"),
+          shape = RoundedCornerShape(14.dp),
+          color = MaterialTheme.colorScheme.surface,
+          border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        ) {
+          Column(
+            modifier = Modifier.fillMaxWidth().padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+          ) {
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              Column(modifier = Modifier.weight(1f)) {
+                Text(
+                  text = item.displayName,
+                  style = MaterialTheme.typography.titleSmall,
+                  fontWeight = FontWeight.Bold,
+                )
+                Text(
+                  text = "@${item.accountId}",
+                  style = MaterialTheme.typography.bodySmall,
+                  color = MaterialTheme.colorScheme.primary,
+                )
+                if (item.deviceInfo.isNotBlank()) {
+                  Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                  ) {
+                    Icon(
+                      imageVector = Icons.Filled.Smartphone,
+                      contentDescription = null,
+                      tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                      modifier = Modifier.size(13.dp),
+                    )
+                    Text(
+                      text = item.deviceInfo,
+                      style = MaterialTheme.typography.labelSmall,
+                      color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                  }
+                }
+              }
+              Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.primaryContainer,
+              ) {
+                Text(
+                  text = formattedPin,
+                  style = MaterialTheme.typography.headlineSmall,
+                  fontFamily = FontFamily.Monospace,
+                  fontWeight = FontWeight.ExtraBold,
+                  letterSpacing = 3.sp,
+                  color = MaterialTheme.colorScheme.onPrimaryContainer,
+                  modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                )
+              }
+            }
+
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+              Button(
+                onClick = { onSharePinWhatsApp(item) },
+                modifier = Modifier.weight(1f).testTag("admin_pin_whatsapp_${item.accountId}"),
+                shape = RoundedCornerShape(10.dp),
+                colors =
+                  ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.tertiary,
+                    contentColor = MaterialTheme.colorScheme.onTertiary,
+                  ),
+              ) {
+                Icon(
+                  imageVector = Icons.AutoMirrored.Filled.Send,
+                  contentDescription = null,
+                  modifier = Modifier.size(16.dp),
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("WhatsApp")
+              }
+              OutlinedButton(
+                onClick = { onCopyPin(item) },
+                modifier = Modifier.weight(1f).testTag("admin_pin_copy_${item.accountId}"),
+                shape = RoundedCornerShape(10.dp),
+              ) {
+                Icon(
+                  imageVector = Icons.Filled.ContentCopy,
+                  contentDescription = null,
+                  modifier = Modifier.size(16.dp),
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Copiar")
+              }
+            }
+
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              TextButton(
+                onClick = { onRegeneratePin(item) },
+                modifier = Modifier.testTag("admin_pin_regen_${item.accountId}"),
+              ) {
+                Icon(
+                  imageVector = Icons.Filled.Refresh,
+                  contentDescription = null,
+                  modifier = Modifier.size(16.dp),
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("Nuevo PIN")
+              }
+              TextButton(
+                onClick = { onRejectPin(item) },
+                modifier = Modifier.testTag("admin_pin_reject_${item.accountId}"),
+              ) {
+                Icon(
+                  imageVector = Icons.Filled.Close,
+                  contentDescription = null,
+                  tint = MaterialTheme.colorScheme.error,
+                  modifier = Modifier.size(16.dp),
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("Rechazar", color = MaterialTheme.colorScheme.error)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+@Composable
 private fun AuthorizedUserCard(
   user: AuthorizedUser,
   onToggleEnabled: (Boolean) -> Unit,
   onResetPassword: () -> Unit,
+  onUnbindDevice: () -> Unit,
   onEdit: () -> Unit,
   onDelete: () -> Unit,
 ) {
@@ -729,15 +1011,38 @@ private fun AuthorizedUserCard(
           }
           Spacer(modifier = Modifier.height(2.dp))
           Text(
-            text = user.email,
+            text = "@${user.email}",
             style = MaterialTheme.typography.bodyMedium,
+            fontFamily = FontFamily.Monospace,
             color = MaterialTheme.colorScheme.primary,
           )
           Text(
-            text = lastAccessLabel,
+            text =
+              if (user.boundUid.isNotBlank()) "$lastAccessLabel · Verificado con PIN"
+              else "$lastAccessLabel · Esperando verificación PIN",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
           )
+          if (user.lastDeviceInfo.isNotBlank()) {
+            Spacer(modifier = Modifier.height(2.dp))
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+              Icon(
+                imageVector = Icons.Filled.Smartphone,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(14.dp),
+              )
+              Text(
+                text = "Dispositivo: ${user.lastDeviceInfo}",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+            }
+          }
           if (user.notes.isNotBlank()) {
             Spacer(modifier = Modifier.height(2.dp))
             Text(
@@ -762,20 +1067,36 @@ private fun AuthorizedUserCard(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
       ) {
-        OutlinedButton(
-          onClick = onResetPassword,
-          modifier = Modifier.testTag("user_reset_password_${user.email}"),
-        ) {
-          Icon(
-            imageVector = Icons.Filled.Key,
-            contentDescription = null,
-            modifier = Modifier.size(16.dp),
-          )
-          Spacer(modifier = Modifier.width(6.dp))
-          Text("Cambiar clave")
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+          OutlinedButton(
+            onClick = onResetPassword,
+            modifier = Modifier.testTag("user_reset_password_${user.email}"),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.Key,
+              contentDescription = null,
+              modifier = Modifier.size(16.dp),
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text("Clave")
+          }
+          if (user.boundUid.isNotBlank()) {
+            OutlinedButton(
+              onClick = onUnbindDevice,
+              modifier = Modifier.testTag("user_unbind_${user.email}"),
+            ) {
+              Icon(
+                imageVector = Icons.Filled.LinkOff,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+              )
+              Spacer(modifier = Modifier.width(4.dp))
+              Text("Pedir PIN")
+            }
+          }
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
           IconButton(
             onClick = onEdit,
             modifier = Modifier.testTag("user_edit_${user.email}"),
@@ -836,9 +1157,10 @@ private fun CreateAuthorizedUserDialog(
         OutlinedTextField(
           value = email,
           onValueChange = { if (it.length <= 128) email = it },
-          label = { Text("Correo electrónico (Google)") },
-          placeholder = { Text("ejemplo@gmail.com") },
-          keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+          label = { Text("Usuario (sin espacios)") },
+          placeholder = { Text("Ej: lucas01") },
+          supportingText = { Text("Mínimo 3 caracteres (letras, números, punto o guion)") },
+          keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
           singleLine = true,
           modifier = Modifier.fillMaxWidth().testTag("create_user_email_input"),
         )
@@ -1083,12 +1405,12 @@ private fun ShareCredentialsDialog(
       👋 ¡Hola, ${credentials.displayName}!
 
       🔐 Te comparto tus datos de acceso para $appBrand:
-      📧 Correo: ${credentials.email}
+      👤 Usuario: ${credentials.email}
       🔑 Contraseña: ${credentials.password}
 
       Pasos para entrar:
-      1) Iniciá sesión con Google usando el correo ${credentials.email}.
-      2) Cuando te pida la clave de acceso, escribí la contraseña de arriba.
+      1) Abrí la app e ingresá tu usuario y contraseña de arriba.
+      2) Cuando te pida el PIN aleatorio de 6 dígitos, avisame y te paso el código que me aparece para confirmar tu identidad.
       """.trimIndent()
     }
 
@@ -1103,7 +1425,7 @@ private fun ShareCredentialsDialog(
       Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(
           text =
-            "Guardá o compartí estos datos ahora. Por seguridad, la contraseña se guarda cifrada y no volverá a mostrarse (siempre podés generar una nueva).",
+            "Guardá o compartí estos datos ahora. Cuando la persona ingrese con su usuario y contraseña, te aparecerá un PIN aleatorio de 6 dígitos en tu pantalla.",
           style = MaterialTheme.typography.bodySmall,
           color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -1118,12 +1440,12 @@ private fun ShareCredentialsDialog(
             verticalArrangement = Arrangement.spacedBy(6.dp),
           ) {
             Text(
-              text = "Usuario: ${credentials.displayName}",
+              text = "Nombre: ${credentials.displayName}",
               style = MaterialTheme.typography.titleSmall,
               fontWeight = FontWeight.Bold,
             )
             Text(
-              text = "Correo: ${credentials.email}",
+              text = "Usuario: ${credentials.email}",
               style = MaterialTheme.typography.bodyMedium,
               fontFamily = FontFamily.Monospace,
             )

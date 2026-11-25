@@ -13,17 +13,72 @@ object AccessControlConfig {
   const val DISABLED_WHATSAPP_MESSAGE = "Buenas Quiero usar la aplicación"
   const val MIN_PASSWORD_LENGTH = 6
   const val MAX_PASSWORD_LENGTH = 64
+  const val PIN_LENGTH = 6
+  const val PIN_TTL_MILLIS = 10 * 60 * 1000L
 
   private val EMAIL_REGEX = Regex("^[^/\\s@]+@[^/\\s@]+\\.[^/\\s@]+$")
+  private val ACCOUNT_ID_REGEX = Regex("^[a-z0-9._@\\-]+$")
 
   fun normalizeEmail(raw: String?): String = raw?.trim()?.lowercase(Locale.ROOT).orEmpty()
+
+  fun normalizeAccountId(raw: String?): String =
+    raw?.trim()?.removePrefix("@")?.lowercase(Locale.ROOT).orEmpty()
 
   fun isValidEmailFormat(raw: String): Boolean {
     val normalized = normalizeEmail(raw)
     return normalized.length in 3..128 && EMAIL_REGEX.matches(normalized)
   }
 
+  /**
+   * Accepts both simple usernames (e.g. "carlos01", "juan_cba", "ana.perez")
+   * and legacy email addresses (e.g. "usuario@gmail.com").
+   */
+  fun isValidAccountId(raw: String): Boolean {
+    val normalized = normalizeAccountId(raw)
+    return normalized.length in 3..128 &&
+      ACCOUNT_ID_REGEX.matches(normalized) &&
+      !normalized.contains("..")
+  }
+
   fun isAdminEmail(raw: String?): Boolean = normalizeEmail(raw) == ADMIN_EMAIL
+
+  fun formatPinForDisplay(rawPin: String): String {
+    val digits = rawPin.filter { it.isDigit() }
+    return if (digits.length == 6) {
+      "${digits.substring(0, 3)} ${digits.substring(3, 6)}"
+    } else {
+      digits
+    }
+  }
+
+  fun currentDeviceLabel(): String =
+    formatDeviceLabel(
+      manufacturer = android.os.Build.MANUFACTURER,
+      model = android.os.Build.MODEL,
+      androidRelease = android.os.Build.VERSION.RELEASE,
+    )
+
+  internal fun formatDeviceLabel(
+    manufacturer: String?,
+    model: String?,
+    androidRelease: String?,
+  ): String {
+    val cleanManufacturer = manufacturer?.trim().orEmpty()
+    val cleanModel = model?.trim().orEmpty()
+    val deviceName =
+      when {
+        cleanManufacturer.isBlank() && cleanModel.isBlank() -> "Dispositivo Android"
+        cleanModel.isBlank() -> cleanManufacturer.replaceFirstChar { it.uppercaseChar() }
+        cleanManufacturer.isBlank() -> cleanModel
+        cleanModel.lowercase(Locale.ROOT).startsWith(cleanManufacturer.lowercase(Locale.ROOT)) ->
+          cleanModel.replaceFirstChar { it.uppercaseChar() }
+        else -> "${cleanManufacturer.replaceFirstChar { it.uppercaseChar() }} $cleanModel"
+      }
+    val cleanRelease = androidRelease?.trim().orEmpty()
+    val combined =
+      if (cleanRelease.isNotBlank()) "$deviceName · Android $cleanRelease" else deviceName
+    return combined.take(120)
+  }
 }
 
 data class PasswordHashResult(
@@ -88,6 +143,18 @@ object PasswordHasher {
   }
 
   /**
+   * Generates a cryptographically random numeric verification PIN (default 6 digits, e.g. "048291").
+   */
+  fun generateRandomPin(length: Int = AccessControlConfig.PIN_LENGTH): String {
+    val safeLength = length.coerceIn(4, 8)
+    val chars = CharArray(safeLength)
+    for (i in 0 until safeLength) {
+      chars[i] = ('0' + secureRandom.nextInt(10))
+    }
+    return String(chars)
+  }
+
+  /**
    * RFC 2898 PBKDF2-HMAC-SHA256 for a 32-byte derived key (single HMAC-SHA256 block).
    * Implemented directly over javax.crypto.Mac("HmacSHA256") for full compatibility from minSdk 24.
    */
@@ -146,18 +213,18 @@ object AccessVerificationStore {
   private const val KEY_EMAIL = "verified_email"
   private const val KEY_VERSION = "verified_password_version"
 
-  fun isVerified(context: Context, email: String, expectedVersion: Long): Boolean {
+  fun isVerified(context: Context, accountId: String, expectedVersion: Long): Boolean {
     if (expectedVersion < 1L) return false
-    val normalized = AccessControlConfig.normalizeEmail(email)
+    val normalized = AccessControlConfig.normalizeAccountId(accountId)
     if (normalized.isBlank()) return false
     val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-    val savedEmail = prefs.getString(KEY_EMAIL, null)
+    val savedAccount = prefs.getString(KEY_EMAIL, null)
     val savedVersion = prefs.getLong(KEY_VERSION, -1L)
-    return savedEmail == normalized && savedVersion == expectedVersion
+    return savedAccount == normalized && savedVersion == expectedVersion
   }
 
-  fun markVerified(context: Context, email: String, passwordVersion: Long) {
-    val normalized = AccessControlConfig.normalizeEmail(email)
+  fun markVerified(context: Context, accountId: String, passwordVersion: Long) {
+    val normalized = AccessControlConfig.normalizeAccountId(accountId)
     if (normalized.isBlank() || passwordVersion < 1L) return
     val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     prefs
@@ -175,27 +242,40 @@ object AccessVerificationStore {
 
 /**
  * Volatile in-memory holder used only for the handoff between the initial login screen
- * (where the user types email + password) and UserAccessGate right after Google Sign-In.
+ * (where the user types usuario + contraseña) and UserAccessGate right after Google Sign-In.
  * Never persisted to disk and wiped immediately once consumed or on sign-out.
  */
 object PendingLoginCredentials {
-  @Volatile private var pendingEmail: String? = null
+  @Volatile private var pendingAccountId: String? = null
   @Volatile private var pendingPassword: String? = null
 
   @Synchronized
-  fun set(email: String, password: String) {
-    pendingEmail = AccessControlConfig.normalizeEmail(email)
+  fun set(accountId: String, password: String) {
+    pendingAccountId = AccessControlConfig.normalizeAccountId(accountId)
     pendingPassword = password
   }
 
   @Synchronized
-  fun consumeForEmail(email: String): Pair<Boolean, String?> {
-    val savedEmail = pendingEmail ?: return false to null
+  fun consume(): Pair<String, String>? {
+    val savedAccount = pendingAccountId
     val savedPassword = pendingPassword
-    pendingEmail = null
+    pendingAccountId = null
     pendingPassword = null
-    val normalizedTarget = AccessControlConfig.normalizeEmail(email)
-    return if (savedEmail == normalizedTarget && !savedPassword.isNullOrEmpty()) {
+    return if (!savedAccount.isNullOrBlank() && !savedPassword.isNullOrEmpty()) {
+      savedAccount to savedPassword
+    } else {
+      null
+    }
+  }
+
+  @Synchronized
+  fun consumeForEmail(email: String): Pair<Boolean, String?> {
+    val savedAccount = pendingAccountId ?: return false to null
+    val savedPassword = pendingPassword
+    pendingAccountId = null
+    pendingPassword = null
+    val normalizedTarget = AccessControlConfig.normalizeAccountId(email)
+    return if (savedAccount == normalizedTarget && !savedPassword.isNullOrEmpty()) {
       true to savedPassword
     } else {
       false to null
@@ -204,7 +284,7 @@ object PendingLoginCredentials {
 
   @Synchronized
   fun clear() {
-    pendingEmail = null
+    pendingAccountId = null
     pendingPassword = null
   }
 }

@@ -161,8 +161,49 @@ data class AuthorizedUser(
   val notes: String = "",
   val boundUid: String = "",
   val lastAccessAt: Long = 0L,
+  val lastDeviceInfo: String = "",
   val createdBy: String = "",
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null,
 )
 
+@androidx.annotation.Keep
+@IgnoreExtraProperties
+data class PinChallenge(
+  @DocumentId val id: String = "",
+  val challengeId: String = "",
+  val accountId: String = "",
+  val displayName: String = "",
+  val requesterUid: String = "",
+  val deviceInfo: String = "",
+  val pinCode: String = "",
+  val pinHash: String = "",
+  val pinSalt: String = "",
+  val status: String = STATUS_PENDING,
+  val expiresAt: Long = 0L,
+  @ServerTimestamp val createdAt: Timestamp? = null,
+  @ServerTimestamp val updatedAt: Timestamp? = null,
+) {
+  companion object {
+    const val STATUS_PENDING = "pending"
+    const val STATUS_VERIFIED = "verified"
+    const val STATUS_REJECTED = "rejected"
+  }
+}
+
+@androidx.annotation.Keep
+@IgnoreExtraProperties
+data class AdminPinInboxItem(
+  @DocumentId val id: String = "",
+  val challengeId: String = "",
+  val accountId: String = "",
+  val displayName: String = "",
+  val requesterUid: String = "",
+  val requesterEmail: String = "",
+  val deviceInfo: String = "",
+  val pinCode: String = "",
+  val status: String = PinChallenge.STATUS_PENDING,
+  val expiresAt: Long = 0L,
+  @ServerTimestamp val createdAt: Timestamp? = null,
+  @ServerTimestamp val updatedAt: Timestamp? = null,
+)

@@ -215,9 +215,17 @@ test("Admin can create, disable, re-enable, reset password, and delete authorize
   await authorizeEmail(ALICE_EMAIL, true);
   await assertSucceeds(adminDb.collection("authorizedUsers").get());
 
-  // Alice can read ONLY her own authorizedUsers doc (not list, not Bob's)
+  // Alice can read her own authorizedUsers doc (not list); once Bob is bound, Alice cannot read Bob's doc
   await assertSucceeds(aliceDb.collection("authorizedUsers").doc(ALICE_EMAIL).get());
   await assertFails(aliceDb.collection("authorizedUsers").get());
+  await authorizeEmail(BOB_EMAIL, true);
+  await assertSucceeds(
+    bobDb.collection("authorizedUsers").doc(BOB_EMAIL).update({
+      boundUid: BOB_UID,
+      lastAccessAt: 1795000000000,
+      updatedAt: pastTimestamp(),
+    })
+  );
   await assertFails(aliceDb.collection("authorizedUsers").doc(BOB_EMAIL).get());
 
   // Alice can record her own boundUid & lastAccessAt while enabled
@@ -552,4 +560,200 @@ test("GitHub updates config at appConfig/updates is admin-writable with strict o
   );
   await assertFails(aliceDb.collection("appConfig").doc("updates").get());
   await assertFails(unauthDb.collection("appConfig").doc("updates").get());
+});
+
+test("Username-only accounts (without Gmail match) bind via /userBindings/{uid}, enforce instant disable kill switch, and prevent hijacking", async () => {
+  const adminDb = adminContext().firestore();
+  const aliceDb = aliceContext().firestore();
+  const bobDb = bobContext().firestore();
+  const username = "carlos01";
+
+  // Admin creates a username-only account (not an email address)
+  await assertSucceeds(
+    adminDb.collection("authorizedUsers").doc(username).set(validAuthorizedUser(username, true))
+  );
+
+  // Reject invalid account IDs (spaces, slashes, uppercase, too short)
+  await assertFails(
+    adminDb.collection("authorizedUsers").doc("ab").set(validAuthorizedUser("ab", true))
+  );
+  await assertFails(
+    adminDb.collection("authorizedUsers").doc("Carlos 01").set(validAuthorizedUser("Carlos 01", true))
+  );
+
+  // Alice (whose Google email is alice@gmail.com) cannot write /userBindings before binding authorizedUsers
+  await assertFails(
+    aliceDb.collection("userBindings").doc(ALICE_UID).set({
+      uid: ALICE_UID,
+      accountId: username,
+      updatedAt: pastTimestamp(),
+    })
+  );
+
+  // Alice looks up carlos01, claims boundUid + lastDeviceInfo, and writes /userBindings/{ALICE_UID}
+  await assertSucceeds(aliceDb.collection("authorizedUsers").doc(username).get());
+  await assertSucceeds(
+    aliceDb.collection("authorizedUsers").doc(username).update({
+      boundUid: ALICE_UID,
+      lastAccessAt: 1795000000000,
+      lastDeviceInfo: "Samsung SM-A546E · Android 14",
+      updatedAt: pastTimestamp(),
+    })
+  );
+  await assertSucceeds(
+    aliceDb.collection("userBindings").doc(ALICE_UID).set({
+      uid: ALICE_UID,
+      accountId: username,
+      updatedAt: pastTimestamp(),
+    })
+  );
+
+  // Now Alice is an active bound user and can access her data
+  await assertSucceeds(
+    aliceDb.collection(`users/${ALICE_UID}/transactions`).doc("tx_u1").set(validTransaction(ALICE_UID))
+  );
+
+  // Bob CANNOT read or hijack carlos01 once bound to Alice
+  await assertFails(bobDb.collection("authorizedUsers").doc(username).get());
+  await assertFails(
+    bobDb.collection("authorizedUsers").doc(username).update({
+      boundUid: BOB_UID,
+      lastAccessAt: 1795000001000,
+      updatedAt: pastTimestamp(),
+    })
+  );
+
+  // Instant kill switch: Admin disables carlos01 -> Alice is immediately blocked from data
+  await assertSucceeds(
+    adminDb.collection("authorizedUsers").doc(username).update({
+      enabled: false,
+      updatedAt: pastTimestamp(),
+    })
+  );
+  await assertFails(aliceDb.collection(`users/${ALICE_UID}/transactions`).get());
+  // Alice can still read her own bound status doc to display the disabled screen
+  await assertSucceeds(aliceDb.collection("authorizedUsers").doc(username).get());
+
+  // Admin can unbind carlos01 (boundUid = "") and re-enable so another device can log in with PIN
+  await assertSucceeds(
+    adminDb.collection("authorizedUsers").doc(username).update({
+      enabled: true,
+      boundUid: "",
+      passwordVersion: 2,
+      updatedAt: pastTimestamp(),
+    })
+  );
+  // Alice is no longer bound to carlos01 so her data access stays blocked until re-verified
+  await assertFails(aliceDb.collection(`users/${ALICE_UID}/transactions`).get());
+});
+
+test("Random Admin PIN verification enforces zero-trust split: users cannot read/list /adminPinInbox while Admin sees PIN and device info", async () => {
+  const adminDb = adminContext().firestore();
+  const aliceDb = aliceContext().firestore();
+  const bobDb = bobContext().firestore();
+  const username = "vendedor_norte";
+  const challengeId = "pin_chal_001";
+  const expiresAt = Date.now() + 600_000;
+  const deviceInfo = "Motorola moto g84 5G · Android 14";
+
+  await assertSucceeds(
+    adminDb.collection("authorizedUsers").doc(username).set(validAuthorizedUser(username, true))
+  );
+
+  const challengeDoc = {
+    challengeId,
+    accountId: username,
+    displayName: "Vendedor Norte",
+    requesterUid: ALICE_UID,
+    deviceInfo,
+    pinCode: "482915",
+    pinHash: "e".repeat(64),
+    pinSalt: "f".repeat(32),
+    status: "pending",
+    expiresAt,
+    createdAt: pastTimestamp(),
+    updatedAt: pastTimestamp(),
+  };
+
+  const inboxDoc = {
+    challengeId,
+    accountId: username,
+    displayName: "Vendedor Norte",
+    requesterUid: ALICE_UID,
+    requesterEmail: ALICE_EMAIL,
+    deviceInfo,
+    pinCode: "482915",
+    status: "pending",
+    expiresAt,
+    createdAt: pastTimestamp(),
+    updatedAt: pastTimestamp(),
+  };
+
+  // Alice creates the challenge (with deviceInfo + pinCode) and the admin-only PIN inbox doc
+  await assertSucceeds(aliceDb.collection("pinChallenges").doc(challengeId).set(challengeDoc));
+  await assertSucceeds(aliceDb.collection("adminPinInbox").doc(challengeId).set(inboxDoc));
+
+  // ZERO-TRUST CHECK: Neither Alice nor Bob can read or list /adminPinInbox
+  await assertFails(aliceDb.collection("adminPinInbox").doc(challengeId).get());
+  await assertFails(aliceDb.collection("adminPinInbox").get());
+  await assertFails(bobDb.collection("adminPinInbox").doc(challengeId).get());
+  await assertFails(bobDb.collection("adminPinInbox").get());
+
+  // Bob cannot read Alice's pinChallenge either
+  await assertFails(bobDb.collection("pinChallenges").doc(challengeId).get());
+  await assertFails(aliceDb.collection("pinChallenges").get());
+
+  // Alice CAN read her own pinChallenge
+  await assertSucceeds(aliceDb.collection("pinChallenges").doc(challengeId).get());
+
+  // Admin CAN list and read /adminPinInbox to see the random 6-digit PIN and device info live
+  await assertSucceeds(adminDb.collection("adminPinInbox").get());
+  await assertSucceeds(adminDb.collection("adminPinInbox").doc(challengeId).get());
+
+  // Admin can regenerate a fresh random PIN (updates both collections)
+  await assertSucceeds(
+    adminDb.collection("adminPinInbox").doc(challengeId).update({
+      pinCode: "917304",
+      expiresAt: Date.now() + 600_000,
+      updatedAt: pastTimestamp(),
+    })
+  );
+  await assertSucceeds(
+    adminDb.collection("pinChallenges").doc(challengeId).update({
+      pinCode: "917304",
+      pinHash: "1".repeat(64),
+      pinSalt: "2".repeat(32),
+      expiresAt: Date.now() + 600_000,
+      updatedAt: pastTimestamp(),
+    })
+  );
+
+  // Alice CANNOT tamper with pinCode, pinHash, or adminPinInbox
+  await assertFails(
+    aliceDb.collection("pinChallenges").doc(challengeId).update({
+      pinCode: "000000",
+      updatedAt: pastTimestamp(),
+    })
+  );
+  await assertFails(
+    aliceDb.collection("pinChallenges").doc(challengeId).update({
+      pinHash: "0".repeat(64),
+      updatedAt: pastTimestamp(),
+    })
+  );
+  await assertFails(
+    aliceDb.collection("adminPinInbox").doc(challengeId).update({
+      pinCode: "000000",
+      updatedAt: pastTimestamp(),
+    })
+  );
+
+  // Once Alice enters the right PIN, she can mark her challenge verified and clean up her inbox entry
+  await assertSucceeds(
+    aliceDb.collection("pinChallenges").doc(challengeId).update({
+      status: "verified",
+      updatedAt: pastTimestamp(),
+    })
+  );
+  await assertSucceeds(aliceDb.collection("adminPinInbox").doc(challengeId).delete());
 });

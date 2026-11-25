@@ -23,6 +23,7 @@ import java.util.Calendar
 object VpnNotificationManager {
   const val CHANNEL_ID = "vpn_expiration_alerts"
   const val PROMISE_CHANNEL_ID = "vpn_payment_promises"
+  const val ADMIN_PIN_CHANNEL_ID = "admin_pin_verification"
 
   const val ACTION_VPN_EXPIRATION = "com.example.ACTION_VPN_EXPIRATION"
   const val ACTION_PAYMENT_PROMISE = "com.example.ACTION_PAYMENT_PROMISE"
@@ -71,6 +72,18 @@ object VpnNotificationManager {
             enableVibration(true)
           }
         manager.createNotificationChannel(promiseChannel)
+      }
+      if (manager.getNotificationChannel(ADMIN_PIN_CHANNEL_ID) == null) {
+        val pinChannel =
+          NotificationChannel(
+            ADMIN_PIN_CHANNEL_ID,
+            "PIN de verificación de acceso",
+            NotificationManager.IMPORTANCE_HIGH,
+          ).apply {
+            description = "PIN aleatorio de 6 dígitos cuando un usuario intenta ingresar a la app"
+            enableVibration(true)
+          }
+        manager.createNotificationChannel(pinChannel)
       }
     }
   }
@@ -336,6 +349,55 @@ object VpnNotificationManager {
           "Avisar por WhatsApp",
           whatsAppPendingIntent,
         )
+
+    NotificationManagerCompat.from(context).notify(notificationId, builder.build())
+  }
+
+  fun showAdminPinNotification(
+    context: Context,
+    challengeId: String,
+    displayName: String,
+    accountId: String,
+    formattedPin: String,
+    deviceInfo: String = "",
+  ) {
+    ensureChannel(context)
+    if (!hasNotificationPermission(context)) return
+
+    val tapIntent =
+      Intent(context, MainActivity::class.java).apply {
+        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+      }
+    val notificationId = ("admin_pin:$challengeId").hashCode()
+    val contentPendingIntent =
+      PendingIntent.getActivity(
+        context,
+        notificationId,
+        tapIntent,
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+      )
+
+    val deviceLine =
+      if (deviceInfo.isNotBlank()) "\nDispositivo: $deviceInfo" else ""
+    val deviceSummary =
+      if (deviceInfo.isNotBlank()) " desde $deviceInfo" else ""
+
+    val builder =
+      NotificationCompat.Builder(context, ADMIN_PIN_CHANNEL_ID)
+        .setSmallIcon(R.mipmap.ic_launcher)
+        .setContentTitle("PIN de acceso: $formattedPin")
+        .setContentText("$displayName (@$accountId)$deviceSummary")
+        .setStyle(
+          NotificationCompat.BigTextStyle()
+            .bigText(
+              "$displayName (@$accountId) inició sesión con su usuario y contraseña.$deviceLine\n" +
+                "PIN aleatorio: $formattedPin\n" +
+                "Abrí Malvinas Pro Service para verlo o rechazar el ingreso."
+            )
+        )
+        .setPriority(NotificationCompat.PRIORITY_HIGH)
+        .setAutoCancel(true)
+        .setContentIntent(contentPendingIntent)
 
     NotificationManagerCompat.from(context).notify(notificationId, builder.build())
   }

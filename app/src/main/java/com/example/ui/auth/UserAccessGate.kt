@@ -23,13 +23,18 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Login
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.GppBad
 import androidx.compose.material.icons.filled.Key
-import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Pin
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Smartphone
+import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
@@ -44,6 +49,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -63,6 +69,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -70,9 +77,11 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.credentials.CredentialManager
 import com.example.R
 import com.example.data.model.AuthorizedUser
+import com.example.data.model.PinChallenge
 import com.example.data.repository.AccessControlRepository
 import com.example.ui.MainAppScaffold
 import com.example.ui.components.AlbicelesteRibbonStripe
@@ -83,22 +92,32 @@ import com.example.util.PendingLoginCredentials
 import com.example.util.WhatsAppHelper
 import com.google.firebase.auth.FirebaseUser
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 private sealed interface AccessGateLoadState {
   data object Loading : AccessGateLoadState
 
-  data class Loaded(val record: AuthorizedUser?) : AccessGateLoadState
+  data class Loaded(val boundAccountId: String?, val record: AuthorizedUser?) : AccessGateLoadState
 
   data class Error(val message: String) : AccessGateLoadState
 }
 
+private data class ActivePinVerification(
+  val challengeId: String,
+  val initialPin: String,
+  val account: AuthorizedUser,
+)
+
+@OptIn(ExperimentalCoroutinesApi::class)
 @Composable
 fun UserAccessGate(user: FirebaseUser) {
-  val normalizedEmail = AccessControlConfig.normalizeEmail(user.email)
-  val isAdmin = AccessControlConfig.isAdminEmail(normalizedEmail)
+  val normalizedGoogleEmail = AccessControlConfig.normalizeEmail(user.email)
+  val isAdmin = AccessControlConfig.isAdminEmail(normalizedGoogleEmail)
 
   if (isAdmin) {
     LaunchedEffect(user.uid) { PendingLoginCredentials.clear() }
@@ -112,26 +131,49 @@ fun UserAccessGate(user: FirebaseUser) {
   val accessRepo = remember(context, user.uid) { AccessControlRepository(context) }
   var retryKey by remember { mutableIntStateOf(0) }
 
+  // Tracks active random Admin PIN challenge after username + password match
+  var activePinSession by remember(user.uid) { mutableStateOf<ActivePinVerification?>(null) }
+  var loginError by remember(user.uid) { mutableStateOf<String?>(null) }
+  var isSubmittingCredentials by remember(user.uid) { mutableStateOf(false) }
+  var unlockedAccountId by remember(user.uid) { mutableStateOf<String?>(null) }
+  var unlockedVersion by remember(user.uid) { mutableLongStateOf(-1L) }
+
+  // Observe /userBindings/{uid} -> /authorizedUsers/{accountId}, with fallback to legacy Google email record
   val loadState by
     produceState<AccessGateLoadState>(
       initialValue = AccessGateLoadState.Loading,
       key1 = user.uid,
-      key2 = normalizedEmail,
+      key2 = normalizedGoogleEmail,
       key3 = retryKey,
     ) {
-      if (!AccessControlConfig.isValidEmailFormat(normalizedEmail)) {
-        value = AccessGateLoadState.Loaded(null)
-        return@produceState
-      }
       accessRepo
-        .observeAuthorizedUserByEmail(normalizedEmail)
+        .observeBoundAccountId(user.uid)
+        .flatMapLatest { boundId ->
+          val effectiveId =
+            boundId?.takeIf { it.isNotBlank() }
+              ?: normalizedGoogleEmail.takeIf { AccessControlConfig.isValidEmailFormat(it) }
+          if (effectiveId.isNullOrBlank()) {
+            flowOf(AccessGateLoadState.Loaded(boundAccountId = null, record = null))
+          } else {
+            accessRepo.observeAuthorizedUserByAccountId(effectiveId).catch { err ->
+              // If legacy/stale doc is now bound to someone else, fall back cleanly to login screen
+              emit(null)
+            }.let { recordFlow ->
+              kotlinx.coroutines.flow.flow {
+                recordFlow.collect { rec ->
+                  emit(AccessGateLoadState.Loaded(boundAccountId = boundId, record = rec))
+                }
+              }
+            }
+          }
+        }
         .catch { err ->
           value =
             AccessGateLoadState.Error(
               err.localizedMessage ?: "No se pudo verificar el estado de tu cuenta."
             )
         }
-        .collect { record -> value = AccessGateLoadState.Loaded(record) }
+        .collect { state -> value = state }
     }
 
   val adminWhatsAppPhone by
@@ -141,18 +183,25 @@ fun UserAccessGate(user: FirebaseUser) {
 
   var whatsappError by remember { mutableStateOf<String?>(null) }
 
-  val openAdminWhatsApp: () -> Unit = {
+  val openAdminWhatsApp: (String) -> Unit = { customMessage ->
     val opened =
       WhatsAppHelper.openWhatsApp(
         context = context,
         rawPhone = adminWhatsAppPhone,
-        message = AccessControlConfig.DISABLED_WHATSAPP_MESSAGE,
+        message = customMessage,
       )
     whatsappError =
       if (opened) null else "No se pudo abrir WhatsApp en este dispositivo."
   }
 
   val handleSignOut: () -> Unit = {
+    val activeId = activePinSession?.challengeId
+    if (!activeId.isNullOrBlank()) {
+      coroutineScope.launch { accessRepo.cancelPinChallenge(activeId) }
+    }
+    activePinSession = null
+    unlockedAccountId = null
+    unlockedVersion = -1L
     signOut(
       context = context,
       credentialManager = credentialManager,
@@ -160,12 +209,166 @@ fun UserAccessGate(user: FirebaseUser) {
     )
   }
 
+  // Shared credential verification routine -> validates username + password -> triggers random Admin PIN
+  val verifyCredentialsAndStartPin: (String, String) -> Unit = { rawAccount, rawPassword ->
+    if (!isSubmittingCredentials) {
+      val cleanAccount = AccessControlConfig.normalizeAccountId(rawAccount)
+      when {
+        !AccessControlConfig.isValidAccountId(cleanAccount) -> {
+          loginError = "Ingresá un usuario válido (mín. 3 caracteres, sin espacios)."
+        }
+        rawPassword.isBlank() -> {
+          loginError = "Ingresá tu contraseña de acceso."
+        }
+        else -> {
+          loginError = null
+          isSubmittingCredentials = true
+          coroutineScope.launch {
+            val lookupResult = accessRepo.getAuthorizedUserByAccountId(cleanAccount)
+            val record =
+              lookupResult.getOrElse { err ->
+                isSubmittingCredentials = false
+                loginError =
+                  err.localizedMessage ?: "No se pudo verificar el usuario ingresado."
+                return@launch
+              }
+
+            if (record == null) {
+              isSubmittingCredentials = false
+              loginError = "Usuario o contraseña incorrectos. Verificá los datos con el administrador."
+              return@launch
+            }
+            if (!record.enabled) {
+              isSubmittingCredentials = false
+              loginError =
+                "El usuario @${record.email} está deshabilitado por el administrador. Tocá 'Hablar por WhatsApp' para solicitar reactivación."
+              return@launch
+            }
+            if (record.boundUid.isNotBlank() && record.boundUid != user.uid) {
+              isSubmittingCredentials = false
+              loginError =
+                "El usuario @${record.email} ya está vinculado a otro dispositivo. Pedile al administrador que lo desvincule."
+              return@launch
+            }
+
+            val passwordOk =
+              withContext(Dispatchers.Default) {
+                PasswordHasher.verifyPassword(
+                  password = rawPassword,
+                  saltHex = record.passwordSalt,
+                  expectedHashHex = record.passwordHash,
+                )
+              }
+            if (!passwordOk) {
+              isSubmittingCredentials = false
+              loginError = "Usuario o contraseña incorrectos."
+              return@launch
+            }
+
+            // Password matches! Generate random 6-digit PIN shown above input & sent with device info to Admin
+            val challengeRes =
+              accessRepo.createPinChallengeForUser(
+                rawAccountId = record.email,
+                displayName = record.displayName,
+                requesterEmail = user.email,
+              )
+            isSubmittingCredentials = false
+            challengeRes.fold(
+              onSuccess = { (challengeId, generatedPin) ->
+                activePinSession =
+                  ActivePinVerification(
+                    challengeId = challengeId,
+                    initialPin = generatedPin,
+                    account = record,
+                  )
+              },
+              onFailure = { err ->
+                loginError =
+                  err.localizedMessage
+                    ?: "No se pudo generar el PIN de verificación. Intentá de nuevo."
+              },
+            )
+          }
+        }
+      }
+    }
+  }
+
+  // If user already typed usuario + contraseña on AuthScreen, auto-verify once loaded
+  LaunchedEffect(loadState) {
+    val loaded = loadState as? AccessGateLoadState.Loaded ?: return@LaunchedEffect
+    val existingRecord = loaded.record
+    val alreadyVerified =
+      existingRecord != null &&
+        existingRecord.enabled &&
+        existingRecord.boundUid == user.uid &&
+        AccessVerificationStore.isVerified(context, existingRecord.email, existingRecord.passwordVersion)
+    if (!alreadyVerified && activePinSession == null) {
+      val pending = PendingLoginCredentials.consume()
+      if (pending != null) {
+        verifyCredentialsAndStartPin(pending.first, pending.second)
+      }
+    } else if (alreadyVerified) {
+      PendingLoginCredentials.clear()
+    }
+  }
+
+  // If currently in the 6-digit Admin PIN step, display PIN verification screen
+  val currentPinSession = activePinSession
+  if (currentPinSession != null) {
+    PinVerificationScreen(
+      session = currentPinSession,
+      accessRepo = accessRepo,
+      onPinVerified = {
+        val account = currentPinSession.account
+        AccessVerificationStore.markVerified(context, account.email, account.passwordVersion)
+        unlockedAccountId = account.email
+        unlockedVersion = account.passwordVersion
+        activePinSession = null
+      },
+      onRequestNewPin = {
+        val oldChallengeId = currentPinSession.challengeId
+        val account = currentPinSession.account
+        coroutineScope.launch {
+          accessRepo.cancelPinChallenge(oldChallengeId)
+          val res =
+            accessRepo.createPinChallengeForUser(
+              rawAccountId = account.email,
+              displayName = account.displayName,
+              requesterEmail = user.email,
+            )
+          res.onSuccess { (newId, newPin) ->
+            activePinSession =
+              ActivePinVerification(
+                challengeId = newId,
+                initialPin = newPin,
+                account = account,
+              )
+          }
+        }
+      },
+      onRequestPinViaWhatsApp = {
+        val account = currentPinSession.account
+        openAdminWhatsApp(
+          "Hola! Acabo de ingresar con el usuario @${account.email} (${account.displayName}) en Malvinas Pro Service. ¿Me pasás el PIN de 6 dígitos que te aparece?"
+        )
+      },
+      whatsappError = whatsappError,
+      onCancel = {
+        val oldId = currentPinSession.challengeId
+        activePinSession = null
+        coroutineScope.launch { accessRepo.cancelPinChallenge(oldId) }
+      },
+    )
+    return
+  }
+
   when (val state = loadState) {
     AccessGateLoadState.Loading -> {
       AccessStatusShell(
         icon = Icons.Filled.Key,
         title = "Verificando acceso...",
-        subtitle = "Comprobando permisos de $normalizedEmail",
+        subtitle = "Comprobando tu sesión en Malvinas Pro Service",
         showProgress = true,
         primaryActionLabel = null,
         onPrimaryAction = null,
@@ -187,149 +390,85 @@ fun UserAccessGate(user: FirebaseUser) {
 
     is AccessGateLoadState.Loaded -> {
       val record = state.record
-      if (record == null) {
-        LaunchedEffect(normalizedEmail) { AccessVerificationStore.clear(context) }
-        AccessStatusShell(
-          icon = Icons.Filled.Block,
-          title = "Cuenta no autorizada",
-          subtitle =
-            "El correo $normalizedEmail todavía no fue habilitado por el administrador. Pedile que cree tu acceso y te pase la contraseña.",
-          showProgress = false,
-          primaryActionLabel = "Volver a comprobar",
-          onPrimaryAction = { retryKey++ },
-          onWhatsAppAdmin = openAdminWhatsApp,
-          whatsappError = whatsappError,
-          onSignOut = handleSignOut,
-          signOutTestTag = "access_not_authorized_sign_out_button",
-        )
-      } else if (!record.enabled) {
-        LaunchedEffect(record.email, record.enabled) { AccessVerificationStore.clear(context) }
+
+      // Case 1: Bound to an account that Admin DISABLED -> Instant Kill Switch screen
+      if (record != null && !record.enabled && (record.boundUid == user.uid || record.email == normalizedGoogleEmail)) {
+        LaunchedEffect(record.email, record.enabled) {
+          AccessVerificationStore.clear(context)
+          unlockedAccountId = null
+          unlockedVersion = -1L
+        }
         AccessStatusShell(
           icon = Icons.Filled.GppBad,
           title = "Acceso deshabilitado",
           subtitle =
-            "El administrador deshabilitó temporalmente tu usuario ($normalizedEmail). Cuando vuelva a habilitarlo, la aplicación se desbloqueará automáticamente.",
+            "El administrador deshabilitó temporalmente tu usuario (@${record.email}). Cuando vuelva a habilitarlo, la aplicación se desbloqueará automáticamente.",
           showProgress = false,
-          primaryActionLabel = null,
-          onPrimaryAction = null,
-          onWhatsAppAdmin = openAdminWhatsApp,
+          primaryActionLabel = "Ingresar con otro usuario",
+          onPrimaryAction = {
+            coroutineScope.launch {
+              accessRepo.clearCurrentUserBinding()
+              retryKey++
+            }
+          },
+          onWhatsAppAdmin = { openAdminWhatsApp(AccessControlConfig.DISABLED_WHATSAPP_MESSAGE) },
           whatsappError = whatsappError,
           onSignOut = handleSignOut,
           signOutTestTag = "access_disabled_sign_out_button",
         )
-      } else {
-        var verifiedVersion by
-          remember(record.email) {
-            mutableLongStateOf(
-              if (AccessVerificationStore.isVerified(context, record.email, record.passwordVersion)) {
-                record.passwordVersion
-              } else {
-                -1L
-              }
-            )
-          }
-        var autoVerifyError by remember(record.email, record.passwordVersion) { mutableStateOf<String?>(null) }
-        var isAutoVerifying by remember(record.email, record.passwordVersion) { mutableStateOf(false) }
-
-        LaunchedEffect(record.email, record.passwordVersion) {
-          if (verifiedVersion != record.passwordVersion) {
-            val (matched, candidatePassword) = PendingLoginCredentials.consumeForEmail(record.email)
-            if (matched && !candidatePassword.isNullOrEmpty()) {
-              isAutoVerifying = true
-              val ok =
-                withContext(Dispatchers.Default) {
-                  PasswordHasher.verifyPassword(
-                    password = candidatePassword,
-                    saltHex = record.passwordSalt,
-                    expectedHashHex = record.passwordHash,
-                  )
-                }
-              isAutoVerifying = false
-              if (ok) {
-                AccessVerificationStore.markVerified(context, record.email, record.passwordVersion)
-                verifiedVersion = record.passwordVersion
-                coroutineScope.launch { accessRepo.recordSelfAccess(record.email) }
-              } else {
-                autoVerifyError =
-                  "La contraseña que ingresaste al inicio es incorrecta. Intentá nuevamente."
-              }
-            }
-          }
-        }
-
-        when {
-          verifiedVersion == record.passwordVersion -> {
-            MainAppScaffold(currentUserId = user.uid, isAdmin = false)
-          }
-          isAutoVerifying -> {
-            AccessStatusShell(
-              icon = Icons.Filled.Key,
-              title = "Verificando contraseña...",
-              subtitle = "Validando tu acceso para ${record.email}",
-              showProgress = true,
-              primaryActionLabel = null,
-              onPrimaryAction = null,
-              onSignOut = handleSignOut,
-            )
-          }
-          else -> {
-            PasswordUnlockScreen(
-              record = record,
-              initialError = autoVerifyError,
-              onUnlocked = {
-                AccessVerificationStore.markVerified(context, record.email, record.passwordVersion)
-                verifiedVersion = record.passwordVersion
-                coroutineScope.launch { accessRepo.recordSelfAccess(record.email) }
-              },
-              onSignOut = handleSignOut,
-            )
-          }
-        }
+        return
       }
+
+      // Case 2: Bound to an active account AND verified for current passwordVersion -> Enter app!
+      val isLocallyVerified =
+        record != null &&
+          record.enabled &&
+          record.boundUid == user.uid &&
+          (
+            (unlockedAccountId == record.email && unlockedVersion == record.passwordVersion) ||
+              AccessVerificationStore.isVerified(context, record.email, record.passwordVersion)
+          )
+
+      if (isLocallyVerified) {
+        MainAppScaffold(currentUserId = user.uid, isAdmin = false)
+        return
+      }
+
+      // Case 3: Not yet bound, password changed, or Admin unbound device -> Usuario + Contraseña -> Admin PIN
+      val prefillAccount =
+        record
+          ?.takeIf { it.enabled && (it.boundUid.isBlank() || it.boundUid == user.uid) }
+          ?.email
+          .orEmpty()
+
+      UsernamePasswordGateScreen(
+        prefillUsername = prefillAccount,
+        isSubmitting = isSubmittingCredentials,
+        errorMessage = loginError,
+        whatsappError = whatsappError,
+        onClearError = { loginError = null },
+        onSubmit = { username, password -> verifyCredentialsAndStartPin(username, password) },
+        onWhatsAppAdmin = { openAdminWhatsApp(AccessControlConfig.DISABLED_WHATSAPP_MESSAGE) },
+        onSignOut = handleSignOut,
+      )
     }
   }
 }
 
 @Composable
-private fun PasswordUnlockScreen(
-  record: AuthorizedUser,
-  initialError: String? = null,
-  onUnlocked: () -> Unit,
+private fun UsernamePasswordGateScreen(
+  prefillUsername: String,
+  isSubmitting: Boolean,
+  errorMessage: String?,
+  whatsappError: String?,
+  onClearError: () -> Unit,
+  onSubmit: (username: String, password: String) -> Unit,
+  onWhatsAppAdmin: () -> Unit,
   onSignOut: () -> Unit,
 ) {
-  val coroutineScope = rememberCoroutineScope()
-  var password by remember(record.email, record.passwordVersion) { mutableStateOf("") }
+  var username by remember(prefillUsername) { mutableStateOf(prefillUsername) }
+  var password by remember { mutableStateOf("") }
   var passwordVisible by remember { mutableStateOf(false) }
-  var isVerifying by remember { mutableStateOf(false) }
-  var errorText by remember(record.email, record.passwordVersion, initialError) { mutableStateOf(initialError) }
-
-  val verifyNow: () -> Unit = {
-    if (!isVerifying) {
-      if (password.isBlank()) {
-        errorText = "Ingresá la contraseña que te entregó el administrador."
-      } else {
-        errorText = null
-        isVerifying = true
-        val candidate = password
-        coroutineScope.launch {
-          val ok =
-            withContext(Dispatchers.Default) {
-              PasswordHasher.verifyPassword(
-                password = candidate,
-                saltHex = record.passwordSalt,
-                expectedHashHex = record.passwordHash,
-              )
-            }
-          isVerifying = false
-          if (ok) {
-            onUnlocked()
-          } else {
-            errorText = "Contraseña incorrecta. Verificá los datos o pedí una nueva al administrador."
-          }
-        }
-      }
-    }
-  }
 
   Surface(
     modifier = Modifier.fillMaxSize(),
@@ -365,7 +504,7 @@ private fun PasswordUnlockScreen(
           Column(
             modifier = Modifier.fillMaxWidth().padding(22.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
           ) {
             Image(
               painter = painterResource(id = R.drawable.malvinas_logo),
@@ -374,27 +513,40 @@ private fun PasswordUnlockScreen(
               modifier = Modifier.size(64.dp).clip(CircleShape),
             )
             Text(
-              text = "¡Hola, ${record.displayName}!",
+              text = "Ingresá con tu cuenta",
               style = MaterialTheme.typography.headlineSmall,
               fontWeight = FontWeight.Bold,
               textAlign = TextAlign.Center,
             )
-            Surface(
-              shape = RoundedCornerShape(20.dp),
-              color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f),
-            ) {
-              Text(
-                text = record.email,
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
-              )
-            }
             Text(
-              text = "Ingresá la contraseña de acceso que te compartió el administrador para desbloquear la aplicación.",
-              style = MaterialTheme.typography.bodyMedium,
+              text =
+                "Escribí el usuario y la contraseña que te entregó el administrador. Luego te pediremos un PIN aleatorio de 6 dígitos para confirmar tu identidad.",
+              style = MaterialTheme.typography.bodySmall,
               color = MaterialTheme.colorScheme.onSurfaceVariant,
               textAlign = TextAlign.Center,
+            )
+
+            OutlinedTextField(
+              value = username,
+              onValueChange = {
+                if (it.length <= 128) {
+                  username = it
+                  onClearError()
+                }
+              },
+              label = { Text("Usuario") },
+              placeholder = { Text("Ej: carlos01") },
+              leadingIcon = {
+                Icon(imageVector = Icons.Filled.Person, contentDescription = null)
+              },
+              singleLine = true,
+              enabled = !isSubmitting,
+              keyboardOptions =
+                KeyboardOptions(
+                  keyboardType = KeyboardType.Text,
+                  imeAction = ImeAction.Next,
+                ),
+              modifier = Modifier.fillMaxWidth().testTag("gate_username_input"),
             )
 
             OutlinedTextField(
@@ -402,19 +554,14 @@ private fun PasswordUnlockScreen(
               onValueChange = {
                 if (it.length <= AccessControlConfig.MAX_PASSWORD_LENGTH) {
                   password = it
-                  errorText = null
+                  onClearError()
                 }
               },
-              label = { Text("Contraseña de acceso") },
-              singleLine = true,
-              visualTransformation =
-                if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
-              keyboardOptions =
-                KeyboardOptions(
-                  keyboardType = KeyboardType.Password,
-                  imeAction = ImeAction.Done,
-                ),
-              keyboardActions = KeyboardActions(onDone = { verifyNow() }),
+              label = { Text("Contraseña") },
+              placeholder = { Text("Ingresá tu contraseña") },
+              leadingIcon = {
+                Icon(imageVector = Icons.Filled.Lock, contentDescription = null)
+              },
               trailingIcon = {
                 IconButton(onClick = { passwordVisible = !passwordVisible }) {
                   Icon(
@@ -425,54 +572,467 @@ private fun PasswordUnlockScreen(
                   )
                 }
               },
-              isError = errorText != null,
-              supportingText =
-                errorText?.let { msg ->
-                  { Text(text = msg, color = MaterialTheme.colorScheme.error) }
-                },
+              visualTransformation =
+                if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+              keyboardOptions =
+                KeyboardOptions(
+                  keyboardType = KeyboardType.Password,
+                  imeAction = ImeAction.Done,
+                ),
+              keyboardActions = KeyboardActions(onDone = { onSubmit(username, password) }),
+              singleLine = true,
+              enabled = !isSubmitting,
               modifier = Modifier.fillMaxWidth().testTag("access_password_input"),
             )
 
+            if (errorMessage != null) {
+              Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.small,
+                color = MaterialTheme.colorScheme.errorContainer,
+              ) {
+                Text(
+                  text = errorMessage,
+                  style = MaterialTheme.typography.bodySmall,
+                  color = MaterialTheme.colorScheme.onErrorContainer,
+                  modifier = Modifier.padding(12.dp),
+                )
+              }
+            }
+
             Button(
-              onClick = verifyNow,
-              enabled = !isVerifying,
+              onClick = { onSubmit(username, password) },
+              enabled = !isSubmitting,
               modifier =
                 Modifier.fillMaxWidth()
                   .height(50.dp)
                   .testTag("access_password_submit_button"),
               shape = RoundedCornerShape(14.dp),
             ) {
-              if (isVerifying) {
+              if (isSubmitting) {
                 CircularProgressIndicator(
                   modifier = Modifier.size(20.dp),
                   color = MaterialTheme.colorScheme.onPrimary,
                   strokeWidth = 2.dp,
                 )
                 Spacer(modifier = Modifier.width(10.dp))
-                Text("Verificando...")
+                Text("Validando...")
               } else {
                 Icon(
-                  imageVector = Icons.Filled.LockOpen,
+                  imageVector = Icons.AutoMirrored.Filled.Login,
                   contentDescription = null,
                   modifier = Modifier.size(18.dp),
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Desbloquear acceso")
+                Text("Continuar y pedir PIN", fontWeight = FontWeight.SemiBold)
               }
             }
 
             OutlinedButton(
-              onClick = onSignOut,
-              modifier = Modifier.fillMaxWidth().height(48.dp).testTag("access_password_sign_out_button"),
+              onClick = onWhatsAppAdmin,
+              modifier =
+                Modifier.fillMaxWidth()
+                  .height(48.dp)
+                  .testTag("access_disabled_whatsapp_button"),
               shape = RoundedCornerShape(14.dp),
             ) {
               Icon(
-                imageVector = Icons.AutoMirrored.Filled.Logout,
+                imageVector = Icons.AutoMirrored.Filled.Send,
                 contentDescription = null,
                 modifier = Modifier.size(18.dp),
               )
               Spacer(modifier = Modifier.width(8.dp))
-              Text("Cambiar de cuenta")
+              Text("Hablar por WhatsApp")
+            }
+
+            if (whatsappError != null) {
+              Text(
+                text = whatsappError,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                textAlign = TextAlign.Center,
+              )
+            }
+
+            TextButton(
+              onClick = onSignOut,
+              modifier = Modifier.testTag("access_password_sign_out_button"),
+            ) {
+              Icon(
+                imageVector = Icons.AutoMirrored.Filled.Logout,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+              )
+              Spacer(modifier = Modifier.width(6.dp))
+              Text("Cerrar sesión")
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun PinVerificationScreen(
+  session: ActivePinVerification,
+  accessRepo: AccessControlRepository,
+  onPinVerified: () -> Unit,
+  onRequestNewPin: () -> Unit,
+  onRequestPinViaWhatsApp: () -> Unit,
+  whatsappError: String?,
+  onCancel: () -> Unit,
+) {
+  val coroutineScope = rememberCoroutineScope()
+  var pinInput by remember(session.challengeId) { mutableStateOf("") }
+  var isVerifying by remember(session.challengeId) { mutableStateOf(false) }
+  var errorText by remember(session.challengeId) { mutableStateOf<String?>(null) }
+
+  val challenge by
+    produceState<PinChallenge?>(initialValue = null, key1 = session.challengeId) {
+      accessRepo
+        .observePinChallenge(session.challengeId)
+        .catch { value = null }
+        .collect { value = it }
+    }
+
+  val isRejected = challenge?.status == PinChallenge.STATUS_REJECTED
+  val isExpired =
+    challenge != null && challenge!!.expiresAt > 0L && System.currentTimeMillis() > challenge!!.expiresAt
+
+  val verifyPinNow: () -> Unit = {
+    val activeChallenge = challenge
+    val cleanPin = pinInput.filter { it.isDigit() }
+    if (!isVerifying) {
+      when {
+        activeChallenge == null -> {
+          errorText = "Esperando confirmación del servidor. Intentá en un segundo."
+        }
+        activeChallenge.status == PinChallenge.STATUS_REJECTED -> {
+          errorText = "El administrador rechazó esta solicitud de ingreso."
+        }
+        activeChallenge.expiresAt > 0L && System.currentTimeMillis() > activeChallenge.expiresAt -> {
+          errorText = "El PIN venció. Tocá 'Solicitar nuevo PIN' para generar otro."
+        }
+        cleanPin.length != AccessControlConfig.PIN_LENGTH -> {
+          errorText = "Ingresá los 6 dígitos del PIN que le apareció al administrador."
+        }
+        else -> {
+          errorText = null
+          isVerifying = true
+          coroutineScope.launch {
+            val matches =
+              withContext(Dispatchers.Default) {
+                PasswordHasher.verifyPassword(
+                  password = cleanPin,
+                  saltHex = activeChallenge.pinSalt,
+                  expectedHashHex = activeChallenge.pinHash,
+                )
+              }
+            if (!matches) {
+              isVerifying = false
+              errorText = "PIN incorrecto. Pedile al administrador que verifique el código de 6 dígitos."
+              return@launch
+            }
+
+            val completeRes =
+              accessRepo.completePinVerification(
+                challengeId = session.challengeId,
+                rawAccountId = session.account.email,
+              )
+            isVerifying = false
+            completeRes.fold(
+              onSuccess = { onPinVerified() },
+              onFailure = { err ->
+                errorText =
+                  err.localizedMessage ?: "No se pudo completar la verificación del PIN."
+              },
+            )
+          }
+        }
+      }
+    }
+  }
+
+  Surface(
+    modifier = Modifier.fillMaxSize(),
+    color = MaterialTheme.colorScheme.background,
+  ) {
+    Box(
+      modifier =
+        Modifier.fillMaxSize()
+          .background(
+            Brush.verticalGradient(
+              colors =
+                listOf(
+                  MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f),
+                  MaterialTheme.colorScheme.background,
+                )
+            )
+          )
+          .safeDrawingPadding()
+          .padding(horizontal = 20.dp, vertical = 16.dp),
+      contentAlignment = Alignment.Center,
+    ) {
+      Card(
+        modifier =
+          Modifier.fillMaxWidth()
+            .widthIn(max = 460.dp)
+            .verticalScroll(rememberScrollState()),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+      ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+          AlbicelesteRibbonStripe(height = 5.dp, showSunBadge = true)
+          Column(
+            modifier = Modifier.fillMaxWidth().padding(22.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(13.dp),
+          ) {
+            Surface(
+              shape = CircleShape,
+              color =
+                if (isRejected) MaterialTheme.colorScheme.errorContainer
+                else MaterialTheme.colorScheme.primaryContainer,
+              modifier = Modifier.size(64.dp),
+            ) {
+              Box(contentAlignment = Alignment.Center) {
+                Icon(
+                  imageVector = if (isRejected) Icons.Filled.GppBad else Icons.Filled.Pin,
+                  contentDescription = null,
+                  tint =
+                    if (isRejected) MaterialTheme.colorScheme.onErrorContainer
+                    else MaterialTheme.colorScheme.onPrimaryContainer,
+                  modifier = Modifier.size(32.dp),
+                )
+              }
+            }
+
+            Text(
+              text =
+                if (isRejected) "Ingreso rechazado" else "Verificación con PIN",
+              style = MaterialTheme.typography.headlineSmall,
+              fontWeight = FontWeight.Bold,
+              textAlign = TextAlign.Center,
+            )
+
+            Surface(
+              shape = RoundedCornerShape(20.dp),
+              color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f),
+            ) {
+              Text(
+                text = "${session.account.displayName} · @${session.account.email}",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+              )
+            }
+
+            Text(
+              text =
+                if (isRejected) {
+                  "El administrador rechazó esta solicitud de acceso. Si fue un error, podés volver e intentar nuevamente."
+                } else {
+                  "Ingresá el PIN aleatorio de 6 dígitos que aparece arriba para confirmar que sos vos. Este código y tu dispositivo también se muestran al administrador."
+                },
+              style = MaterialTheme.typography.bodyMedium,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              textAlign = TextAlign.Center,
+            )
+
+            if (!isRejected) {
+              val displayedPin =
+                challenge?.pinCode?.takeIf { it.length == AccessControlConfig.PIN_LENGTH }
+                  ?: session.initialPin
+              val formattedDisplayedPin = AccessControlConfig.formatPinForDisplay(displayedPin)
+              val deviceLabel = remember { AccessControlConfig.currentDeviceLabel() }
+
+              Surface(
+                modifier = Modifier.fillMaxWidth().testTag("random_pin_display_box"),
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f),
+                border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.secondary),
+              ) {
+                Column(
+                  modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+                  horizontalAlignment = Alignment.CenterHorizontally,
+                  verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                  Text(
+                    text = "PIN ALEATORIO DE VERIFICACIÓN",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                  )
+                  Text(
+                    text = formattedDisplayedPin,
+                    style = MaterialTheme.typography.headlineLarge,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.ExtraBold,
+                    letterSpacing = 6.sp,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.testTag("random_pin_display_value"),
+                  )
+                  Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                  ) {
+                    Icon(
+                      imageVector = Icons.Filled.Smartphone,
+                      contentDescription = null,
+                      tint = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f),
+                      modifier = Modifier.size(14.dp),
+                    )
+                    Text(
+                      text = deviceLabel,
+                      style = MaterialTheme.typography.labelSmall,
+                      color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.85f),
+                    )
+                  }
+                }
+              }
+
+              OutlinedTextField(
+                value = pinInput,
+                onValueChange = { raw ->
+                  val digits = raw.filter { it.isDigit() }.take(AccessControlConfig.PIN_LENGTH)
+                  pinInput = digits
+                  errorText = null
+                },
+                label = { Text("Escribí el PIN de 6 dígitos") },
+                placeholder = { Text("000000") },
+                singleLine = true,
+                enabled = !isVerifying,
+                textStyle =
+                  MaterialTheme.typography.headlineMedium.copy(
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 6.sp,
+                    textAlign = TextAlign.Center,
+                  ),
+                keyboardOptions =
+                  KeyboardOptions(
+                    keyboardType = KeyboardType.NumberPassword,
+                    imeAction = ImeAction.Done,
+                  ),
+                keyboardActions = KeyboardActions(onDone = { verifyPinNow() }),
+                modifier = Modifier.fillMaxWidth().testTag("pin_verification_input"),
+              )
+            }
+
+            val displayError =
+              errorText
+                ?: if (isExpired) "El PIN venció. Tocá 'Solicitar nuevo PIN' para generar otro." else null
+            if (displayError != null) {
+              Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.small,
+                color = MaterialTheme.colorScheme.errorContainer,
+              ) {
+                Text(
+                  text = displayError,
+                  style = MaterialTheme.typography.bodySmall,
+                  color = MaterialTheme.colorScheme.onErrorContainer,
+                  modifier = Modifier.padding(12.dp),
+                )
+              }
+            }
+
+            if (!isRejected) {
+              Button(
+                onClick = verifyPinNow,
+                enabled = !isVerifying && pinInput.length == AccessControlConfig.PIN_LENGTH,
+                modifier =
+                  Modifier.fillMaxWidth()
+                    .height(52.dp)
+                    .testTag("verify_pin_button"),
+                shape = RoundedCornerShape(14.dp),
+              ) {
+                if (isVerifying) {
+                  CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    strokeWidth = 2.dp,
+                  )
+                  Spacer(modifier = Modifier.width(10.dp))
+                  Text("Verificando PIN...")
+                } else {
+                  Icon(
+                    imageVector = Icons.Filled.VerifiedUser,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                  )
+                  Spacer(modifier = Modifier.width(8.dp))
+                  Text("Verificar PIN", fontWeight = FontWeight.SemiBold)
+                }
+              }
+
+              Button(
+                onClick = onRequestPinViaWhatsApp,
+                modifier =
+                  Modifier.fillMaxWidth()
+                    .height(48.dp)
+                    .testTag("request_pin_whatsapp_button"),
+                shape = RoundedCornerShape(14.dp),
+                colors =
+                  ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.tertiary,
+                    contentColor = MaterialTheme.colorScheme.onTertiary,
+                  ),
+              ) {
+                Icon(
+                  imageVector = Icons.AutoMirrored.Filled.Send,
+                  contentDescription = null,
+                  modifier = Modifier.size(18.dp),
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Pedir PIN por WhatsApp", fontWeight = FontWeight.SemiBold)
+              }
+
+              if (whatsappError != null) {
+                Text(
+                  text = whatsappError,
+                  style = MaterialTheme.typography.bodySmall,
+                  color = MaterialTheme.colorScheme.error,
+                  textAlign = TextAlign.Center,
+                )
+              }
+
+              OutlinedButton(
+                onClick = {
+                  pinInput = ""
+                  errorText = null
+                  onRequestNewPin()
+                },
+                enabled = !isVerifying,
+                modifier =
+                  Modifier.fillMaxWidth()
+                    .height(48.dp)
+                    .testTag("request_new_pin_button"),
+                shape = RoundedCornerShape(14.dp),
+              ) {
+                Icon(
+                  imageVector = Icons.Filled.Refresh,
+                  contentDescription = null,
+                  modifier = Modifier.size(18.dp),
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Generar nuevo PIN")
+              }
+            }
+
+            TextButton(
+              onClick = onCancel,
+              modifier = Modifier.testTag("cancel_pin_verification_button"),
+            ) {
+              Icon(
+                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+              )
+              Spacer(modifier = Modifier.width(6.dp))
+              Text("Volver al inicio de sesión")
             }
           }
         }
