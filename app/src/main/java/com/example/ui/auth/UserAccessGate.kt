@@ -430,6 +430,12 @@ fun UserAccessGate(user: FirebaseUser) {
           )
 
       if (isLocallyVerified) {
+        LaunchedEffect(record.email, user.uid) {
+          accessRepo.recordSelfAccess(
+            rawAccountId = record.email,
+            displayName = record.displayName,
+          )
+        }
         MainAppScaffold(currentUserId = user.uid, isAdmin = false)
         return
       }
@@ -468,209 +474,36 @@ private fun UsernamePasswordGateScreen(
 ) {
   var username by remember(prefillUsername) { mutableStateOf(prefillUsername) }
   var password by remember { mutableStateOf("") }
-  var passwordVisible by remember { mutableStateOf(false) }
 
-  Surface(
-    modifier = Modifier.fillMaxSize(),
-    color = MaterialTheme.colorScheme.background,
-  ) {
-    Box(
-      modifier =
-        Modifier.fillMaxSize()
-          .background(
-            Brush.verticalGradient(
-              colors =
-                listOf(
-                  MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f),
-                  MaterialTheme.colorScheme.background,
-                )
-            )
-          )
-          .safeDrawingPadding()
-          .padding(horizontal = 20.dp, vertical = 16.dp),
-      contentAlignment = Alignment.Center,
-    ) {
-      Card(
-        modifier =
-          Modifier.fillMaxWidth()
-            .widthIn(max = 460.dp)
-            .verticalScroll(rememberScrollState()),
-        shape = MaterialTheme.shapes.large,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-      ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-          AlbicelesteRibbonStripe(height = 5.dp, showSunBadge = true)
-          Column(
-            modifier = Modifier.fillMaxWidth().padding(22.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-          ) {
-            Image(
-              painter = painterResource(id = R.drawable.malvinas_logo),
-              contentDescription = "Logo Malvinas Pro Service",
-              contentScale = ContentScale.Crop,
-              modifier = Modifier.size(64.dp).clip(CircleShape),
-            )
-            Text(
-              text = "Ingresá con tu cuenta",
-              style = MaterialTheme.typography.headlineSmall,
-              fontWeight = FontWeight.Bold,
-              textAlign = TextAlign.Center,
-            )
-            Text(
-              text =
-                "Escribí el usuario y la contraseña que te entregó el administrador. Luego te pediremos un PIN aleatorio de 6 dígitos para confirmar tu identidad.",
-              style = MaterialTheme.typography.bodySmall,
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
-              textAlign = TextAlign.Center,
-            )
-
-            OutlinedTextField(
-              value = username,
-              onValueChange = {
-                if (it.length <= 128) {
-                  username = it
-                  onClearError()
-                }
-              },
-              label = { Text("Usuario") },
-              placeholder = { Text("Ej: carlos01") },
-              leadingIcon = {
-                Icon(imageVector = Icons.Filled.Person, contentDescription = null)
-              },
-              singleLine = true,
-              enabled = !isSubmitting,
-              keyboardOptions =
-                KeyboardOptions(
-                  keyboardType = KeyboardType.Text,
-                  imeAction = ImeAction.Next,
-                ),
-              modifier = Modifier.fillMaxWidth().testTag("gate_username_input"),
-            )
-
-            OutlinedTextField(
-              value = password,
-              onValueChange = {
-                if (it.length <= AccessControlConfig.MAX_PASSWORD_LENGTH) {
-                  password = it
-                  onClearError()
-                }
-              },
-              label = { Text("Contraseña") },
-              placeholder = { Text("Ingresá tu contraseña") },
-              leadingIcon = {
-                Icon(imageVector = Icons.Filled.Lock, contentDescription = null)
-              },
-              trailingIcon = {
-                IconButton(onClick = { passwordVisible = !passwordVisible }) {
-                  Icon(
-                    imageVector =
-                      if (passwordVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                    contentDescription =
-                      if (passwordVisible) "Ocultar contraseña" else "Mostrar contraseña",
-                  )
-                }
-              },
-              visualTransformation =
-                if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
-              keyboardOptions =
-                KeyboardOptions(
-                  keyboardType = KeyboardType.Password,
-                  imeAction = ImeAction.Done,
-                ),
-              keyboardActions = KeyboardActions(onDone = { onSubmit(username, password) }),
-              singleLine = true,
-              enabled = !isSubmitting,
-              modifier = Modifier.fillMaxWidth().testTag("access_password_input"),
-            )
-
-            if (errorMessage != null) {
-              Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = MaterialTheme.shapes.small,
-                color = MaterialTheme.colorScheme.errorContainer,
-              ) {
-                Text(
-                  text = errorMessage,
-                  style = MaterialTheme.typography.bodySmall,
-                  color = MaterialTheme.colorScheme.onErrorContainer,
-                  modifier = Modifier.padding(12.dp),
-                )
-              }
-            }
-
-            Button(
-              onClick = { onSubmit(username, password) },
-              enabled = !isSubmitting,
-              modifier =
-                Modifier.fillMaxWidth()
-                  .height(50.dp)
-                  .testTag("access_password_submit_button"),
-              shape = RoundedCornerShape(14.dp),
-            ) {
-              if (isSubmitting) {
-                CircularProgressIndicator(
-                  modifier = Modifier.size(20.dp),
-                  color = MaterialTheme.colorScheme.onPrimary,
-                  strokeWidth = 2.dp,
-                )
-                Spacer(modifier = Modifier.width(10.dp))
-                Text("Validando...")
-              } else {
-                Icon(
-                  imageVector = Icons.AutoMirrored.Filled.Login,
-                  contentDescription = null,
-                  modifier = Modifier.size(18.dp),
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Continuar y pedir PIN", fontWeight = FontWeight.SemiBold)
-              }
-            }
-
-            OutlinedButton(
-              onClick = onWhatsAppAdmin,
-              modifier =
-                Modifier.fillMaxWidth()
-                  .height(48.dp)
-                  .testTag("access_disabled_whatsapp_button"),
-              shape = RoundedCornerShape(14.dp),
-            ) {
-              Icon(
-                imageVector = Icons.AutoMirrored.Filled.Send,
-                contentDescription = null,
-                modifier = Modifier.size(18.dp),
-              )
-              Spacer(modifier = Modifier.width(8.dp))
-              Text("Hablar por WhatsApp")
-            }
-
-            if (whatsappError != null) {
-              Text(
-                text = whatsappError,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
-                textAlign = TextAlign.Center,
-              )
-            }
-
-            TextButton(
-              onClick = onSignOut,
-              modifier = Modifier.testTag("access_password_sign_out_button"),
-            ) {
-              Icon(
-                imageVector = Icons.AutoMirrored.Filled.Logout,
-                contentDescription = null,
-                modifier = Modifier.size(16.dp),
-              )
-              Spacer(modifier = Modifier.width(6.dp))
-              Text("Cerrar sesión")
-            }
-          }
-        }
+  MalvinasLoginShell(
+    username = username,
+    onUsernameChange = {
+      if (it.length <= 128) {
+        username = it
+        onClearError()
       }
-    }
-  }
+    },
+    password = password,
+    onPasswordChange = {
+      if (it.length <= AccessControlConfig.MAX_PASSWORD_LENGTH) {
+        password = it
+        onClearError()
+      }
+    },
+    isLoading = isSubmitting,
+    loadingLabel = "Validando...",
+    errorMessage = errorMessage,
+    secondaryInfoError = whatsappError,
+    onPrimarySubmit = { onSubmit(username, password) },
+    onRequestAccessClick = onWhatsAppAdmin,
+    usernameTestTag = "gate_username_input",
+    passwordTestTag = "access_password_input",
+    primaryButtonTestTag = "access_password_submit_button",
+    requestAccessTestTag = "access_disabled_whatsapp_button",
+    footerActionLabel = "Cerrar sesión",
+    footerActionTestTag = "access_password_sign_out_button",
+    onFooterAction = onSignOut,
+  )
 }
 
 @Composable
@@ -739,6 +572,7 @@ private fun PinVerificationScreen(
               accessRepo.completePinVerification(
                 challengeId = session.challengeId,
                 rawAccountId = session.account.email,
+                displayName = session.account.displayName,
               )
             isVerifying = false
             completeRes.fold(

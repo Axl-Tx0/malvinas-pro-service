@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -17,6 +18,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Calculate
 import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.LocalOffer
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -28,6 +31,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -43,6 +47,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.example.data.model.ProfileType
 import com.example.data.model.Reseller
+import com.example.data.model.ServicePlan
 import com.example.util.Formatters
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -50,6 +55,8 @@ import com.example.util.Formatters
 fun ResellerEditorSheet(
   existing: Reseller?,
   defaultProfile: ProfileType,
+  savedPlans: List<ServicePlan> = emptyList(),
+  onManagePlans: () -> Unit = {},
   onSave: (ProfileType, String, String, Long, Double, Long, String) -> Unit,
   onDismiss: () -> Unit,
 ) {
@@ -124,6 +131,52 @@ fun ResellerEditorSheet(
         singleLine = true,
         modifier = Modifier.fillMaxWidth().testTag("reseller_phone_input"),
       )
+
+      val resellerPlans =
+        remember(savedPlans) { savedPlans.filter { it.targetType == ServicePlan.TARGET_RESELLER } }
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+      ) {
+        Text(
+          text = "Precios por crédito guardados",
+          style = MaterialTheme.typography.labelLarge,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        TextButton(
+          onClick = onManagePlans,
+          modifier = Modifier.testTag("reseller_editor_manage_plans_button"),
+        ) {
+          Text(if (resellerPlans.isEmpty()) "+ Crear precios" else "Gestionar")
+        }
+      }
+      if (resellerPlans.isNotEmpty()) {
+        Row(
+          modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+          resellerPlans.forEach { plan ->
+            AssistChip(
+              onClick = {
+                priceText = plan.price.toBigDecimal().stripTrailingZeros().toPlainString()
+                validationError = null
+              },
+              leadingIcon = {
+                Icon(
+                  imageVector = Icons.Filled.LocalOffer,
+                  contentDescription = null,
+                  modifier = Modifier.size(16.dp),
+                )
+              },
+              label = {
+                Text("${plan.name} · ${Formatters.formatCurrency(plan.price)} c/u")
+              },
+              modifier = Modifier.testTag("reseller_plan_chip_${plan.id}"),
+            )
+          }
+        }
+      }
 
       Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         OutlinedTextField(

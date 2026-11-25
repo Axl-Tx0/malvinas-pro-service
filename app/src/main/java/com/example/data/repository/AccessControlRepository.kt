@@ -4,6 +4,7 @@ import android.content.Context
 import com.example.R
 import com.example.data.firebase.OperationType
 import com.example.data.firebase.handleFirestoreError
+import com.example.data.model.AccessLogEntry
 import com.example.data.model.AdminPinInboxItem
 import com.example.data.model.AuthorizedUser
 import com.example.data.model.PinChallenge
@@ -16,6 +17,7 @@ import com.google.firebase.firestore.DocumentSnapshot.ServerTimestampBehavior
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
+import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.snapshots
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
@@ -406,7 +408,10 @@ class AccessControlRepository(
     }
   }
 
-  suspend fun recordSelfAccess(rawAccountId: String): Result<Unit> {
+  suspend fun recordSelfAccess(
+    rawAccountId: String,
+    displayName: String = "",
+  ): Result<Unit> {
     val uid = requireCurrentUid()
     val accountId = AccessControlConfig.normalizeAccountId(rawAccountId)
     if (!AccessControlConfig.isValidAccountId(accountId)) {
@@ -434,6 +439,11 @@ class AccessControlRepository(
           )
         )
         .await()
+      appendAccessLog(
+        accountId = accountId,
+        displayName = displayName.ifBlank { accountId },
+        eventType = AccessLogEntry.EVENT_SESSION_ACCESS,
+      )
       Result.success(Unit)
     } catch (e: CancellationException) {
       throw e
@@ -543,6 +553,7 @@ class AccessControlRepository(
   suspend fun completePinVerification(
     challengeId: String,
     rawAccountId: String,
+    displayName: String = "",
   ): Result<Unit> {
     val uid = requireCurrentUid()
     val accountId = AccessControlConfig.normalizeAccountId(rawAccountId)
@@ -585,6 +596,12 @@ class AccessControlRepository(
         )
         .await()
 
+      appendAccessLog(
+        accountId = accountId,
+        displayName = displayName.ifBlank { accountId },
+        eventType = AccessLogEntry.EVENT_PIN_LOGIN,
+      )
+
       // Best-effort cleanup of Admin's pending inbox entry now that the user verified
       runCatching { inboxRef.delete().await() }
       Result.success(Unit)
@@ -592,6 +609,72 @@ class AccessControlRepository(
       throw e
     } catch (e: Exception) {
       handleFirestoreError(e, OperationType.UPDATE, challengeRef.path, auth)
+      Result.failure(e)
+    }
+  }
+
+  // --- Immutable Access History Logs (Admin-Only Read) ---
+
+  private suspend fun appendAccessLog(
+    accountId: String,
+    displayName: String,
+    eventType: String,
+  ) {
+    val uid = auth.currentUser?.uid ?: return
+    val safeName = displayName.trim().ifBlank { accountId }.take(80)
+    val safeDevice = AccessControlConfig.currentDeviceLabel().trim().ifBlank { "Android" }.take(120)
+    val safeEvent =
+      if (eventType == AccessLogEntry.EVENT_SESSION_ACCESS) {
+        AccessLogEntry.EVENT_SESSION_ACCESS
+      } else {
+        AccessLogEntry.EVENT_PIN_LOGIN
+      }
+    val logId = "log_${UUID.randomUUID().toString().replace("-", "")}"
+    val payload =
+      mapOf(
+        "accountId" to accountId,
+        "displayName" to safeName,
+        "uid" to uid,
+        "deviceInfo" to safeDevice,
+        "eventType" to safeEvent,
+        "timestampMillis" to System.currentTimeMillis(),
+        "createdAt" to FieldValue.serverTimestamp(),
+      )
+    runCatching {
+      db.collection(ACCESS_LOGS_COLLECTION).document(logId).set(payload).await()
+    }
+  }
+
+  fun observeAccessLogs(limitCount: Long = 100L): Flow<List<AccessLogEntry>> = flow {
+    val path = ACCESS_LOGS_COLLECTION
+    emitAll(
+      db.collection(ACCESS_LOGS_COLLECTION)
+        .orderBy("timestampMillis", Query.Direction.DESCENDING)
+        .limit(limitCount.coerceIn(1L, 250L))
+        .snapshots()
+        .map { snapshot ->
+          snapshot
+            .toObjects(AccessLogEntry::class.java, ServerTimestampBehavior.ESTIMATE)
+            .sortedByDescending { it.timestampMillis }
+        }
+        .catch { error ->
+          logStreamError(error, OperationType.LIST, path)
+          emit(emptyList())
+        }
+    )
+  }
+
+  suspend fun deleteAccessLog(logId: String): Result<Unit> {
+    requireCurrentUid()
+    if (logId.isBlank()) return Result.failure(IllegalArgumentException("Registro inválido."))
+    val docRef = db.collection(ACCESS_LOGS_COLLECTION).document(logId)
+    return try {
+      docRef.delete().await()
+      Result.success(Unit)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.DELETE, docRef.path, auth)
       Result.failure(e)
     }
   }
@@ -818,6 +901,7 @@ class AccessControlRepository(
     const val USER_BINDINGS_COLLECTION = "userBindings"
     const val PIN_CHALLENGES_COLLECTION = "pinChallenges"
     const val ADMIN_PIN_INBOX_COLLECTION = "adminPinInbox"
+    const val ACCESS_LOGS_COLLECTION = "accessLogs"
     const val APP_CONFIG_COLLECTION = "appConfig"
     const val SUPPORT_DOC_ID = "support"
     const val UPDATES_DOC_ID = "updates"

@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -10,11 +11,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.LocalOffer
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
@@ -44,6 +48,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.example.data.model.FinancialTransaction
 import com.example.data.model.ProfileType
+import com.example.data.model.ServicePlan
 import com.example.data.model.TransactionType
 import com.example.data.model.VpnAccount
 import com.example.util.Formatters
@@ -228,6 +233,8 @@ fun TransactionEditorSheet(
 fun VpnEditorSheet(
   existing: VpnAccount?,
   defaultProfile: ProfileType,
+  savedPlans: List<ServicePlan> = emptyList(),
+  onManagePlans: () -> Unit = {},
   onSave: (ProfileType, String, String, String, String, Double, Long, Boolean, Boolean, Long, String, String) -> Unit,
   onDismiss: () -> Unit,
 ) {
@@ -318,6 +325,61 @@ fun VpnEditorSheet(
         singleLine = true,
         modifier = Modifier.fillMaxWidth().testTag("vpn_username_input"),
       )
+
+      val clientPlans =
+        remember(savedPlans) { savedPlans.filter { it.targetType == ServicePlan.TARGET_CLIENT } }
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+      ) {
+        Text(
+          text = "Planes guardados",
+          style = MaterialTheme.typography.labelLarge,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        TextButton(
+          onClick = onManagePlans,
+          modifier = Modifier.testTag("vpn_editor_manage_plans_button"),
+        ) {
+          Text(if (clientPlans.isEmpty()) "+ Crear planes" else "Gestionar")
+        }
+      }
+      if (clientPlans.isNotEmpty()) {
+        Row(
+          modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+          clientPlans.forEach { plan ->
+            AssistChip(
+              onClick = {
+                planName = plan.name
+                amountText =
+                  plan.price.toBigDecimal().stripTrailingZeros().toPlainString()
+                expirationMillis =
+                  Formatters.addDaysLocalNoon(
+                    System.currentTimeMillis(),
+                    plan.durationDays.toInt().coerceIn(1, 365),
+                  )
+                validationError = null
+              },
+              leadingIcon = {
+                Icon(
+                  imageVector = Icons.Filled.LocalOffer,
+                  contentDescription = null,
+                  modifier = Modifier.size(16.dp),
+                )
+              },
+              label = {
+                Text(
+                  "${plan.name} · ${Formatters.formatCurrency(plan.price)} (${plan.durationDays}d)"
+                )
+              },
+              modifier = Modifier.testTag("vpn_plan_chip_${plan.id}"),
+            )
+          }
+        }
+      }
 
       Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         OutlinedTextField(

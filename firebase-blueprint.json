@@ -318,6 +318,26 @@
           "type": "boolean",
           "description": "Default toggle for automatically creating an income transaction when marking a client or VPN as paid."
         },
+        "paymentAlias": {
+          "type": "string",
+          "description": "Optional bank or wallet alias (e.g. Mercado Pago alias) for quick payment sharing."
+        },
+        "paymentCbuCvu": {
+          "type": "string",
+          "description": "Optional CBU or CVU transfer number for quick payment sharing."
+        },
+        "paymentHolderName": {
+          "type": "string",
+          "description": "Optional account holder full name shown in payment details."
+        },
+        "paymentBankOrWallet": {
+          "type": "string",
+          "description": "Optional bank or digital wallet name (e.g. Mercado Pago, Banco Nación)."
+        },
+        "paymentLink": {
+          "type": "string",
+          "description": "Optional HTTPS payment link (e.g. Mercado Pago payment link)."
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",
@@ -545,6 +565,52 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "ServicePlan": {
+      "title": "ServicePlan",
+      "description": "Reusable saved plan or price preset for quick client or reseller entry.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "name": { "type": "string" },
+        "price": { "type": "number" },
+        "durationDays": { "type": "integer" },
+        "targetType": { "type": "string", "enum": ["client", "reseller"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "userId",
+        "name",
+        "price",
+        "durationDays",
+        "targetType",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AccessLogEntry": {
+      "title": "AccessLogEntry",
+      "description": "Immutable login and verification audit record readable only by Admin.",
+      "type": "object",
+      "properties": {
+        "accountId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "uid": { "type": "string" },
+        "deviceInfo": { "type": "string" },
+        "eventType": { "type": "string", "enum": ["pin_login", "session_access"] },
+        "timestampMillis": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "accountId",
+        "displayName",
+        "uid",
+        "deviceInfo",
+        "eventType",
+        "timestampMillis",
+        "createdAt"
+      ]
     }
   },
   "firestore": {
@@ -563,6 +629,10 @@
     "/users/{userId}/resellers/{resellerId}": {
       "schema": { "$ref": "#/entities/Reseller" },
       "description": "User-owned VPN resellers tracking credits count, price per credit, and total value."
+    },
+    "/users/{userId}/servicePlans/{planId}": {
+      "schema": { "$ref": "#/entities/ServicePlan" },
+      "description": "User-owned saved plans and price presets for rapid client and reseller creation."
     },
     "/users/{userId}/settings/{settingId}": {
       "schema": { "$ref": "#/entities/UserSettings" },
@@ -591,6 +661,10 @@
     "/adminPinInbox/{challengeId}": {
       "schema": { "$ref": "#/entities/AdminPinInboxItem" },
       "description": "Admin-read-only random 6-digit PINs displayed live to the Admin for user identity verification."
+    },
+    "/accessLogs/{logId}": {
+      "schema": { "$ref": "#/entities/AccessLogEntry" },
+      "description": "Immutable Admin-only login history recording accountId, device model, and timestamp."
     }
   }
 }

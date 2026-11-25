@@ -757,3 +757,144 @@ test("Random Admin PIN verification enforces zero-trust split: users cannot read
   );
   await assertSucceeds(aliceDb.collection("adminPinInbox").doc(challengeId).delete());
 });
+
+test("Authorized owner can CRUD ServicePlan presets; rejects invalid values and cross-user access", async () => {
+  await authorizeEmail(ALICE_EMAIL, true);
+  await authorizeEmail(BOB_EMAIL, true);
+
+  const aliceDb = aliceContext().firestore();
+  const bobDb = bobContext().firestore();
+  const unauthDb = testEnv.unauthenticatedContext().firestore();
+
+  const planPayload = {
+    userId: ALICE_UID,
+    name: "Plan VIP 30 días",
+    price: 9500,
+    durationDays: 30,
+    targetType: "client",
+    createdAt: pastTimestamp(),
+    updatedAt: pastTimestamp(),
+  };
+
+  const ref = aliceDb.collection(`users/${ALICE_UID}/servicePlans`).doc("plan_1");
+  await assertSucceeds(ref.set(planPayload));
+  await assertSucceeds(aliceDb.collection(`users/${ALICE_UID}/servicePlans`).get());
+  await assertSucceeds(
+    ref.update({
+      price: 10500,
+      durationDays: 60,
+      updatedAt: pastTimestamp(),
+    })
+  );
+
+  // Reject invalid targetType and durationDays
+  await assertFails(
+    ref.update({
+      targetType: "admin",
+      updatedAt: pastTimestamp(),
+    })
+  );
+  await assertFails(
+    ref.update({
+      durationDays: 0,
+      updatedAt: pastTimestamp(),
+    })
+  );
+
+  // Cross-user and unauthenticated denied
+  await assertFails(bobDb.collection(`users/${ALICE_UID}/servicePlans`).get());
+  await assertFails(bobDb.collection(`users/${ALICE_UID}/servicePlans`).doc("plan_1").get());
+  await assertFails(unauthDb.collection(`users/${ALICE_UID}/servicePlans`).get());
+
+  await assertSucceeds(ref.delete());
+});
+
+test("AccessLogs are append-only by signed-in verified users, immutable, and readable/deletable only by Admin", async () => {
+  const adminDb = adminContext().firestore();
+  const aliceDb = aliceContext().firestore();
+  const bobDb = bobContext().firestore();
+  const unauthDb = testEnv.unauthenticatedContext().firestore();
+  const username = "vendedor_sur";
+
+  await assertSucceeds(
+    adminDb.collection("authorizedUsers").doc(username).set(validAuthorizedUser(username, true))
+  );
+
+  const logDoc = {
+    accountId: username,
+    displayName: "Vendedor Sur",
+    uid: ALICE_UID,
+    deviceInfo: "Samsung SM-A546E · Android 14",
+    eventType: "pin_login",
+    timestampMillis: Date.now(),
+    createdAt: pastTimestamp(),
+  };
+
+  // Alice can record her own login event
+  const logRef = aliceDb.collection("accessLogs").doc("log_001");
+  await assertSucceeds(logRef.set(logDoc));
+
+  // Alice CANNOT spoof another UID or read/list/update/delete accessLogs
+  await assertFails(
+    aliceDb.collection("accessLogs").doc("log_spoof").set({ ...logDoc, uid: BOB_UID })
+  );
+  await assertFails(aliceDb.collection("accessLogs").get());
+  await assertFails(logRef.get());
+  await assertFails(logRef.update({ deviceInfo: "Hacked" }));
+  await assertFails(logRef.delete());
+
+  // Bob and unauthenticated cannot read/list
+  await assertFails(bobDb.collection("accessLogs").get());
+  await assertFails(unauthDb.collection("accessLogs").get());
+
+  // Admin CAN list, read, and delete logs, but CANNOT mutate existing logs (immutable)
+  await assertSucceeds(adminDb.collection("accessLogs").get());
+  await assertSucceeds(adminDb.collection("accessLogs").doc("log_001").get());
+  await assertFails(
+    adminDb.collection("accessLogs").doc("log_001").update({ deviceInfo: "Edited" })
+  );
+  await assertSucceeds(adminDb.collection("accessLogs").doc("log_001").delete());
+});
+
+test("UserSettings accepts valid payment details (alias, CBU/CVU, holder, bank, https link) and rejects unsafe links", async () => {
+  await authorizeEmail(ALICE_EMAIL, true);
+  const aliceDb = aliceContext().firestore();
+  const ref = aliceDb.collection(`users/${ALICE_UID}/settings`).doc("preferences");
+
+  await assertSucceeds(
+    ref.set({
+      ...validUserSettings(ALICE_UID),
+      paymentAlias: "malvinas.pro.mp",
+      paymentCbuCvu: "0000003100012345678901",
+      paymentHolderName: "Axel Del Valle",
+      paymentBankOrWallet: "Mercado Pago",
+      paymentLink: "https://link.mercadopago.com.ar/malvinaspro",
+    })
+  );
+
+  // Valid update clearing paymentLink
+  await assertSucceeds(
+    ref.update({
+      paymentAlias: "malvinas.nuevo.mp",
+      paymentLink: "",
+      updatedAt: pastTimestamp(),
+    })
+  );
+
+  // Reject unsafe javascript: or non-http paymentLink
+  await assertFails(
+    ref.update({
+      paymentLink: "javascript:alert(1)",
+      updatedAt: pastTimestamp(),
+    })
+  );
+
+  // Reject oversized alias (>80 chars)
+  await assertFails(
+    ref.update({
+      paymentAlias: "a".repeat(81),
+      updatedAt: pastTimestamp(),
+    })
+  );
+});
+

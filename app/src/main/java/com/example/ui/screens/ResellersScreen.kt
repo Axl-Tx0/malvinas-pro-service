@@ -21,12 +21,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.AccountBalance
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Autorenew
 import androidx.compose.material.icons.filled.ConfirmationNumber
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Event
+import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Storefront
 import androidx.compose.material3.Button
@@ -75,6 +77,8 @@ fun ResellersScreen(
   onAdjustCredits: (Reseller, Long) -> Unit,
   onRenew30Days: (Reseller) -> Unit,
   onSendWhatsApp: (Reseller) -> Unit,
+  onShowReceipt: (Reseller) -> Unit = {},
+  onSendPaymentInfo: (Reseller) -> Unit = {},
   onEditReseller: (Reseller) -> Unit,
   onDeleteReseller: (Reseller) -> Unit,
   modifier: Modifier = Modifier,
@@ -244,6 +248,8 @@ fun ResellersScreen(
           },
           onRenew30Days = { onRenew30Days(reseller) },
           onSendWhatsApp = { onSendWhatsApp(reseller) },
+          onShowReceipt = { onShowReceipt(reseller) },
+          onSendPaymentInfo = { onSendPaymentInfo(reseller) },
           onEdit = { onEditReseller(reseller) },
           onDelete = { onDeleteReseller(reseller) },
         )
@@ -373,6 +379,8 @@ private fun ResellerCard(
   onIncreaseCredit: () -> Unit,
   onRenew30Days: () -> Unit,
   onSendWhatsApp: () -> Unit,
+  onShowReceipt: () -> Unit,
+  onSendPaymentInfo: () -> Unit,
   onEdit: () -> Unit,
   onDelete: () -> Unit,
 ) {
@@ -479,6 +487,28 @@ private fun ResellerCard(
         }
 
         Row {
+          IconButton(
+            onClick = onShowReceipt,
+            modifier = Modifier.size(48.dp).testTag("reseller_receipt_${reseller.id}"),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.ReceiptLong,
+              contentDescription = "Enviar comprobante de pago",
+              tint = MaterialTheme.colorScheme.tertiary,
+              modifier = Modifier.size(18.dp),
+            )
+          }
+          IconButton(
+            onClick = onSendPaymentInfo,
+            modifier = Modifier.size(48.dp).testTag("reseller_payment_info_${reseller.id}"),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.AccountBalance,
+              contentDescription = "Enviar datos de cobro (Alias / CBU)",
+              tint = MaterialTheme.colorScheme.primary,
+              modifier = Modifier.size(18.dp),
+            )
+          }
           IconButton(onClick = onEdit, modifier = Modifier.size(48.dp)) {
             Icon(
               imageVector = Icons.Filled.Edit,

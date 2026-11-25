@@ -7,6 +7,7 @@ import com.example.data.firebase.handleFirestoreError
 import com.example.data.model.FinancialTransaction
 import com.example.data.model.RemoteAppConfig
 import com.example.data.model.Reseller
+import com.example.data.model.ServicePlan
 import com.example.data.model.TransactionType
 import com.example.data.model.UserSettings
 import com.example.data.model.VpnAccount
@@ -471,6 +472,108 @@ class MalvinasRepository(
     }
   }
 
+  // --- Service Plans (Saved Pricing Presets) ---
+
+  fun observeServicePlans(userId: String): Flow<List<ServicePlan>> = flow {
+    val path = "users/$userId/servicePlans"
+    emitAll(
+      db.collection("users")
+        .document(userId)
+        .collection("servicePlans")
+        .snapshots()
+        .map { snapshot ->
+          snapshot
+            .toObjects(ServicePlan::class.java, ServerTimestampBehavior.ESTIMATE)
+            .sortedWith(compareBy<ServicePlan> { it.targetType }.thenBy { it.name.lowercase() })
+        }
+        .catch { error ->
+          logStreamErrorIfActive(error, OperationType.LIST, path, userId)
+          throw error
+        }
+    )
+  }
+
+  suspend fun addServicePlan(plan: ServicePlan): Result<String> {
+    val uid = requireUserId()
+    val cleanName = plan.name.trim().take(60)
+    if (cleanName.isBlank()) {
+      return Result.failure(IllegalArgumentException("Ingresá un nombre para el plan."))
+    }
+    val safeTarget =
+      if (plan.targetType == ServicePlan.TARGET_RESELLER) {
+        ServicePlan.TARGET_RESELLER
+      } else {
+        ServicePlan.TARGET_CLIENT
+      }
+    val docRef = db.collection("users").document(uid).collection("servicePlans").document()
+    val payload =
+      mapOf(
+        "userId" to uid,
+        "name" to cleanName,
+        "price" to plan.price.coerceIn(0.0, 1_000_000_000.0),
+        "durationDays" to plan.durationDays.coerceIn(1L, 365L),
+        "targetType" to safeTarget,
+        "createdAt" to FieldValue.serverTimestamp(),
+        "updatedAt" to FieldValue.serverTimestamp(),
+      )
+    return try {
+      docRef.set(payload).await()
+      Result.success(docRef.id)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.CREATE, docRef.path, auth)
+      Result.failure(e)
+    }
+  }
+
+  suspend fun updateServicePlan(plan: ServicePlan): Result<Unit> {
+    val uid = requireUserId()
+    require(plan.id.isNotBlank()) { "El ID del plan es requerido." }
+    val cleanName = plan.name.trim().take(60)
+    if (cleanName.isBlank()) {
+      return Result.failure(IllegalArgumentException("Ingresá un nombre para el plan."))
+    }
+    val safeTarget =
+      if (plan.targetType == ServicePlan.TARGET_RESELLER) {
+        ServicePlan.TARGET_RESELLER
+      } else {
+        ServicePlan.TARGET_CLIENT
+      }
+    val docRef = db.collection("users").document(uid).collection("servicePlans").document(plan.id)
+    val updates =
+      mapOf(
+        "name" to cleanName,
+        "price" to plan.price.coerceIn(0.0, 1_000_000_000.0),
+        "durationDays" to plan.durationDays.coerceIn(1L, 365L),
+        "targetType" to safeTarget,
+        "updatedAt" to FieldValue.serverTimestamp(),
+      )
+    return try {
+      docRef.update(updates).await()
+      Result.success(Unit)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.UPDATE, docRef.path, auth)
+      Result.failure(e)
+    }
+  }
+
+  suspend fun deleteServicePlan(planId: String): Result<Unit> {
+    val uid = requireUserId()
+    val docRef = db.collection("users").document(uid).collection("servicePlans").document(planId)
+    return try {
+      docRef.delete().await()
+      Result.success(Unit)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.DELETE, docRef.path, auth)
+      Result.failure(e)
+    }
+  }
+
   // --- User Settings (WhatsApp Templates, Reminder Hour & Defaults) ---
 
   fun observeUserSettings(userId: String): Flow<UserSettings> = flow {
@@ -513,6 +616,23 @@ class MalvinasRepository(
     val sanitizedCountry = settings.defaultCountryCode.filter { it.isDigit() }.take(10)
     val clampedHour = settings.reminderHour.coerceIn(0L, 23L)
     val clampedVpnDays = settings.defaultVpnDays.coerceIn(1L, 365L)
+    val sanitizedAlias = settings.paymentAlias.trim().take(80)
+    val sanitizedCbuCvu = settings.paymentCbuCvu.trim().take(40)
+    val sanitizedHolder = settings.paymentHolderName.trim().take(80)
+    val sanitizedBank = settings.paymentBankOrWallet.trim().take(60)
+    val rawLink = settings.paymentLink.trim().take(250)
+    val sanitizedLink =
+      when {
+        rawLink.isBlank() -> ""
+        rawLink.startsWith("https://", ignoreCase = true) ||
+          rawLink.startsWith("http://", ignoreCase = true) -> rawLink
+        !rawLink.contains("://") && rawLink.contains(".") && !rawLink.contains(" ") ->
+          "https://$rawLink".take(250)
+        else ->
+          return Result.failure(
+            IllegalArgumentException("El link de pago debe comenzar con https://")
+          )
+      }
 
     return try {
       val existingSnapshot = docRef.get().await()
@@ -527,6 +647,11 @@ class MalvinasRepository(
             "reminderHour" to clampedHour,
             "defaultVpnDays" to clampedVpnDays,
             "autoRecordIncomeOnPay" to settings.autoRecordIncomeOnPay,
+            "paymentAlias" to sanitizedAlias,
+            "paymentCbuCvu" to sanitizedCbuCvu,
+            "paymentHolderName" to sanitizedHolder,
+            "paymentBankOrWallet" to sanitizedBank,
+            "paymentLink" to sanitizedLink,
             "createdAt" to FieldValue.serverTimestamp(),
             "updatedAt" to FieldValue.serverTimestamp(),
           )
@@ -541,6 +666,11 @@ class MalvinasRepository(
             "reminderHour" to clampedHour,
             "defaultVpnDays" to clampedVpnDays,
             "autoRecordIncomeOnPay" to settings.autoRecordIncomeOnPay,
+            "paymentAlias" to sanitizedAlias,
+            "paymentCbuCvu" to sanitizedCbuCvu,
+            "paymentHolderName" to sanitizedHolder,
+            "paymentBankOrWallet" to sanitizedBank,
+            "paymentLink" to sanitizedLink,
             "updatedAt" to FieldValue.serverTimestamp(),
           )
         docRef.update(updatePayload).await()
@@ -561,12 +691,18 @@ class MalvinasRepository(
     val transactionsCount: Int,
     val vpnAccountsCount: Int,
     val resellersCount: Int = 0,
+    val servicePlansCount: Int = 0,
     val hasSettingsDoc: Boolean,
     val isFromServer: Boolean,
     val remoteConfig: RemoteAppConfig? = null,
   ) {
     val totalRecords: Int
-      get() = transactionsCount + vpnAccountsCount + resellersCount + if (hasSettingsDoc) 1 else 0
+      get() =
+        transactionsCount +
+          vpnAccountsCount +
+          resellersCount +
+          servicePlansCount +
+          if (hasSettingsDoc) 1 else 0
   }
 
   suspend fun fetchRemoteAppConfig(): Result<RemoteAppConfig?> {
@@ -600,6 +736,7 @@ class MalvinasRepository(
       val txSnap = userRef.collection("transactions").get(Source.SERVER).await()
       val vpnSnap = userRef.collection("vpnAccounts").get(Source.SERVER).await()
       val resellersSnap = userRef.collection("resellers").get(Source.SERVER).await()
+      val plansSnap = userRef.collection("servicePlans").get(Source.SERVER).await()
       val settingsSnap =
         userRef.collection("settings").document(UserSettings.PREFERENCES_DOC_ID).get(Source.SERVER).await()
       val remoteConfig =
@@ -613,6 +750,7 @@ class MalvinasRepository(
           transactionsCount = txSnap.size(),
           vpnAccountsCount = vpnSnap.size(),
           resellersCount = resellersSnap.size(),
+          servicePlansCount = plansSnap.size(),
           hasSettingsDoc = settingsSnap.exists(),
           isFromServer = true,
           remoteConfig = remoteConfig,
@@ -648,6 +786,10 @@ class MalvinasRepository(
       val existingResellerKeys =
         userRef.collection("resellers").get().await().toObjects(Reseller::class.java)
           .map { "${it.profileType}|${it.name.lowercase()}" }
+          .toHashSet()
+      val existingPlanKeys =
+        userRef.collection("servicePlans").get().await().toObjects(ServicePlan::class.java)
+          .map { "${it.targetType}|${it.name.lowercase()}" }
           .toHashSet()
 
       val ops = mutableListOf<Pair<com.google.firebase.firestore.DocumentReference, Map<String, Any>>>()
@@ -721,6 +863,32 @@ class MalvinasRepository(
                 "totalAmount" to (credits * price).coerceIn(0.0, 1_000_000_000_000.0),
                 "expirationMillis" to reseller.expirationMillis.coerceAtLeast(0L),
                 "notes" to reseller.notes.trim().take(300),
+                "createdAt" to FieldValue.serverTimestamp(),
+                "updatedAt" to FieldValue.serverTimestamp(),
+              )
+          )
+        }
+      }
+
+      backup.servicePlans.forEach { plan ->
+        val safeTarget =
+          if (plan.targetType == ServicePlan.TARGET_RESELLER) {
+            ServicePlan.TARGET_RESELLER
+          } else {
+            ServicePlan.TARGET_CLIENT
+          }
+        val cleanName = plan.name.trim().take(60)
+        val key = "$safeTarget|${cleanName.lowercase()}"
+        if (cleanName.isNotBlank() && existingPlanKeys.add(key)) {
+          val ref = userRef.collection("servicePlans").document()
+          ops.add(
+            ref to
+              mapOf(
+                "userId" to uid,
+                "name" to cleanName,
+                "price" to plan.price.coerceIn(0.0, 1_000_000_000.0),
+                "durationDays" to plan.durationDays.coerceIn(1L, 365L),
+                "targetType" to safeTarget,
                 "createdAt" to FieldValue.serverTimestamp(),
                 "updatedAt" to FieldValue.serverTimestamp(),
               )

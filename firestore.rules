@@ -143,7 +143,16 @@ service cloud.firestore {
              (!('defaultCountryCode' in data) || (data.defaultCountryCode is string && data.defaultCountryCode.size() <= 10)) &&
              data.reminderHour is int && data.reminderHour >= 0 && data.reminderHour <= 23 &&
              data.defaultVpnDays is int && data.defaultVpnDays >= 1 && data.defaultVpnDays <= 365 &&
-             data.autoRecordIncomeOnPay is bool;
+             data.autoRecordIncomeOnPay is bool &&
+             (!('paymentAlias' in data) || (data.paymentAlias is string && data.paymentAlias.size() <= 80)) &&
+             (!('paymentCbuCvu' in data) || (data.paymentCbuCvu is string && data.paymentCbuCvu.size() <= 40)) &&
+             (!('paymentHolderName' in data) || (data.paymentHolderName is string && data.paymentHolderName.size() <= 80)) &&
+             (!('paymentBankOrWallet' in data) || (data.paymentBankOrWallet is string && data.paymentBankOrWallet.size() <= 60)) &&
+             (!('paymentLink' in data) || (
+               data.paymentLink is string &&
+               data.paymentLink.size() <= 250 &&
+               (data.paymentLink == '' || data.paymentLink.matches('^https?://.+'))
+             ));
     }
 
     function isValidAuthorizedUser(data, accountId) {
@@ -194,6 +203,23 @@ service cloud.firestore {
              data.pinCode is string && data.pinCode.matches('^[0-9]{6}$') &&
              data.status is string && (data.status == 'pending' || data.status == 'verified' || data.status == 'rejected') &&
              data.expiresAt is int && data.expiresAt > 0;
+    }
+
+    function isValidServicePlan(data, userId) {
+      return data.userId is string && data.userId == userId &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 60 &&
+             data.price is number && data.price >= 0 && data.price <= 1000000000 &&
+             data.durationDays is int && data.durationDays >= 1 && data.durationDays <= 365 &&
+             data.targetType is string && (data.targetType == 'client' || data.targetType == 'reseller');
+    }
+
+    function isValidAccessLog(data) {
+      return isValidAccountDocId(data.accountId) &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
+             data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 &&
+             data.deviceInfo is string && data.deviceInfo.size() >= 1 && data.deviceInfo.size() <= 120 &&
+             data.eventType is string && (data.eventType == 'pin_login' || data.eventType == 'session_access') &&
+             data.timestampMillis is int && data.timestampMillis > 0;
     }
 
     // --- Admin-Managed Authorized Users (Username or Email + Password + Kill Switch) ---
@@ -363,6 +389,27 @@ service cloud.firestore {
       allow delete: if isAdmin() || (isSignedIn() && existing().requesterUid == request.auth.uid);
     }
 
+    // --- Immutable Admin-Only Access History Logs ---
+    match /accessLogs/{logId} {
+      allow list, get: if isAdmin();
+      allow create: if isSignedIn() &&
+                       isValidId(logId) &&
+                       incoming().keys().hasAll([
+                         'accountId', 'displayName', 'uid', 'deviceInfo',
+                         'eventType', 'timestampMillis', 'createdAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'accountId', 'displayName', 'uid', 'deviceInfo',
+                         'eventType', 'timestampMillis', 'createdAt'
+                       ]) &&
+                       incoming().uid == request.auth.uid &&
+                       incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                       isValidAccessLog(incoming()) &&
+                       (isAdmin() || isAccountClaimableByCaller(incoming().accountId));
+      allow update: if false;
+      allow delete: if isAdmin() && isValidId(logId);
+    }
+
     // --- User-Scoped Collections (Enforces Active Authorization) ---
     match /users/{userId} {
 
@@ -500,6 +547,37 @@ service cloud.firestore {
         allow delete: if isActiveOwner(userId) && isValidId(resellerId);
       }
 
+      match /servicePlans/{planId} {
+        allow list: if isActiveOwner(userId);
+        allow get: if isActiveOwner(userId) && isValidId(planId);
+
+        allow create: if isActiveOwner(userId) &&
+                         isValidId(planId) &&
+                         incoming().keys().hasAll([
+                           'userId', 'name', 'price', 'durationDays',
+                           'targetType', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'name', 'price', 'durationDays',
+                           'targetType', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         isValidServicePlan(incoming(), userId);
+
+        allow update: if isActiveOwner(userId) &&
+                         isValidId(planId) &&
+                         isValidServicePlan(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'name', 'price', 'durationDays', 'targetType', 'updatedAt'
+                         ]);
+
+        allow delete: if isActiveOwner(userId) && isValidId(planId);
+      }
+
       match /settings/{settingId} {
         allow list: if isActiveOwner(userId);
         allow get: if isActiveOwner(userId) && isValidId(settingId);
@@ -513,7 +591,9 @@ service cloud.firestore {
                          incoming().keys().hasOnly([
                            'userId', 'businessName', 'whatsappClientTemplate', 'whatsappVpnTemplate',
                            'defaultCountryCode', 'reminderHour', 'defaultVpnDays',
-                           'autoRecordIncomeOnPay', 'createdAt', 'updatedAt'
+                           'autoRecordIncomeOnPay', 'paymentAlias', 'paymentCbuCvu',
+                           'paymentHolderName', 'paymentBankOrWallet', 'paymentLink',
+                           'createdAt', 'updatedAt'
                          ]) &&
                          incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
                          incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
@@ -528,7 +608,9 @@ service cloud.firestore {
                          incoming().diff(existing()).affectedKeys().hasOnly([
                            'businessName', 'whatsappClientTemplate', 'whatsappVpnTemplate',
                            'defaultCountryCode', 'reminderHour', 'defaultVpnDays',
-                           'autoRecordIncomeOnPay', 'updatedAt'
+                           'autoRecordIncomeOnPay', 'paymentAlias', 'paymentCbuCvu',
+                           'paymentHolderName', 'paymentBankOrWallet', 'paymentLink',
+                           'updatedAt'
                          ]);
 
         allow delete: if isActiveOwner(userId) && isValidId(settingId);

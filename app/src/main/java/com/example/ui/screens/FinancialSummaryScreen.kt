@@ -22,14 +22,19 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Savings
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.TableChart
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -55,6 +60,7 @@ import com.example.data.model.TransactionType
 import com.example.ui.components.MonthlyIncomeExpenseChartCard
 import com.example.ui.viewmodel.DashboardData
 import com.example.ui.viewmodel.MonthlyChartPoint
+import com.example.util.FinancialExportRequest
 import com.example.util.Formatters
 
 private data class CategoryBreakdown(
@@ -68,6 +74,9 @@ private data class CategoryBreakdown(
 fun FinancialSummaryScreen(
   data: DashboardData,
   onAddTransaction: () -> Unit,
+  onExportPdf: (FinancialExportRequest) -> Unit = {},
+  onExportCsv: (FinancialExportRequest) -> Unit = {},
+  onSharePdf: (FinancialExportRequest) -> Unit = {},
   modifier: Modifier = Modifier,
 ) {
   var monthsCount by remember { mutableIntStateOf(6) }
@@ -148,6 +157,25 @@ fun FinancialSummaryScreen(
         totalIncome = totalIncome,
         totalExpenses = totalExpenses,
         netBalance = netBalance,
+      )
+    }
+
+    item {
+      val exportRequest =
+        remember(data.settings.businessName, monthsCount, scopedTransactions, displayedPoints) {
+          FinancialExportRequest(
+            businessName = data.settings.businessName,
+            periodTitle = "Últimos $monthsCount meses",
+            fileSlug = "ultimos_${monthsCount}_meses",
+            transactions = scopedTransactions,
+            monthlyBreakdown = displayedPoints,
+          )
+        }
+      ExportBalanceCard(
+        periodLabel = "Últimos $monthsCount meses (${scopedTransactions.size} movimientos)",
+        onExportPdf = { onExportPdf(exportRequest) },
+        onExportCsv = { onExportCsv(exportRequest) },
+        onSharePdf = { onSharePdf(exportRequest) },
       )
     }
 
@@ -532,6 +560,83 @@ private fun EmptyFinancialChartCard(
         Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
         Spacer(modifier = Modifier.width(6.dp))
         Text("Agregar movimiento")
+      }
+    }
+  }
+}
+
+@Composable
+private fun ExportBalanceCard(
+  periodLabel: String,
+  onExportPdf: () -> Unit,
+  onExportCsv: () -> Unit,
+  onSharePdf: () -> Unit,
+) {
+  Card(
+    modifier = Modifier.fillMaxWidth().testTag("financial_export_card"),
+    shape = MaterialTheme.shapes.large,
+    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+  ) {
+    Column(
+      modifier = Modifier.fillMaxWidth().padding(16.dp),
+      verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+      Column {
+        Text(
+          text = "Exportar balance",
+          style = MaterialTheme.typography.titleMedium,
+          fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+          text = "$periodLabel · Descargá en PDF o planilla Excel (CSV)",
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+      }
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
+        FilledTonalButton(
+          onClick = onExportPdf,
+          modifier = Modifier.weight(1f).testTag("financial_export_pdf_button"),
+          shape = RoundedCornerShape(12.dp),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.PictureAsPdf,
+            contentDescription = null,
+            modifier = Modifier.size(16.dp),
+          )
+          Spacer(modifier = Modifier.width(6.dp))
+          Text("Guardar PDF", maxLines = 1)
+        }
+        OutlinedButton(
+          onClick = onExportCsv,
+          modifier = Modifier.weight(1f).testTag("financial_export_csv_button"),
+          shape = RoundedCornerShape(12.dp),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.TableChart,
+            contentDescription = null,
+            modifier = Modifier.size(16.dp),
+          )
+          Spacer(modifier = Modifier.width(6.dp))
+          Text("Excel (CSV)", maxLines = 1)
+        }
+      }
+      OutlinedButton(
+        onClick = onSharePdf,
+        modifier = Modifier.fillMaxWidth().testTag("financial_share_pdf_button"),
+        shape = RoundedCornerShape(12.dp),
+      ) {
+        Icon(
+          imageVector = Icons.Filled.Share,
+          contentDescription = null,
+          modifier = Modifier.size(16.dp),
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text("Compartir reporte PDF")
       }
     }
   }

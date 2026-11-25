@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.PersonAdd
@@ -80,6 +81,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.example.data.model.AccessLogEntry
 import com.example.data.model.AdminPinInboxItem
 import com.example.data.model.AuthorizedUser
 import com.example.data.repository.AccessControlRepository
@@ -137,6 +139,11 @@ fun UserAccessAdminDialog(
       accessRepo.observePendingAdminPins().collect { pins -> value = pins }
     }
 
+  val accessLogs by
+    produceState<List<AccessLogEntry>>(initialValue = emptyList(), key1 = accessRepo) {
+      accessRepo.observeAccessLogs(limitCount = 120L).collect { logs -> value = logs }
+    }
+
   val savedAdminPhone by
     produceState(initialValue = "", key1 = accessRepo) {
       accessRepo.observeAdminWhatsAppPhone().collect { phone -> value = phone }
@@ -149,6 +156,8 @@ fun UserAccessAdminDialog(
   var resetPasswordTarget by remember { mutableStateOf<AuthorizedUser?>(null) }
   var deleteTarget by remember { mutableStateOf<AuthorizedUser?>(null) }
   var shareCredentials by remember { mutableStateOf<ShareableCredentials?>(null) }
+  var showAccessHistoryDialog by remember { mutableStateOf(false) }
+  var historyFilterAccountId by remember { mutableStateOf<String?>(null) }
 
   Dialog(
     onDismissRequest = onDismiss,
@@ -370,6 +379,22 @@ fun UserAccessAdminDialog(
                       modifier = Modifier.weight(1f),
                     )
                   }
+                  OutlinedButton(
+                    onClick = {
+                      historyFilterAccountId = null
+                      showAccessHistoryDialog = true
+                    },
+                    modifier = Modifier.fillMaxWidth().testTag("admin_open_access_history_button"),
+                    shape = RoundedCornerShape(12.dp),
+                  ) {
+                    Icon(
+                      imageVector = Icons.Filled.History,
+                      contentDescription = null,
+                      modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Historial de accesos (${accessLogs.size})")
+                  }
                 }
               }
             }
@@ -570,6 +595,10 @@ fun UserAccessAdminDialog(
                       )
                     }
                   },
+                  onViewHistory = {
+                    historyFilterAccountId = user.email
+                    showAccessHistoryDialog = true
+                  },
                   onEdit = { editingUser = user },
                   onDelete = { deleteTarget = user },
                 )
@@ -722,6 +751,23 @@ fun UserAccessAdminDialog(
         }
       },
       onDismiss = { shareCredentials = null },
+    )
+  }
+
+  if (showAccessHistoryDialog) {
+    AccessHistoryDialog(
+      logs = accessLogs,
+      filterAccountId = historyFilterAccountId,
+      onClearFilter = { historyFilterAccountId = null },
+      onDeleteLog = { log ->
+        coroutineScope.launch {
+          val res = accessRepo.deleteAccessLog(log.id)
+          if (res.isFailure) {
+            snackbarHostState.showSnackbar("No se pudo eliminar el registro")
+          }
+        }
+      },
+      onDismiss = { showAccessHistoryDialog = false },
     )
   }
 }
@@ -948,6 +994,7 @@ private fun AuthorizedUserCard(
   onToggleEnabled: (Boolean) -> Unit,
   onResetPassword: () -> Unit,
   onUnbindDevice: () -> Unit,
+  onViewHistory: () -> Unit,
   onEdit: () -> Unit,
   onDelete: () -> Unit,
 ) {
@@ -1098,6 +1145,16 @@ private fun AuthorizedUserCard(
 
         Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
           IconButton(
+            onClick = onViewHistory,
+            modifier = Modifier.testTag("user_history_${user.email}"),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.History,
+              contentDescription = "Ver historial de accesos de ${user.displayName}",
+              tint = MaterialTheme.colorScheme.primary,
+            )
+          }
+          IconButton(
             onClick = onEdit,
             modifier = Modifier.testTag("user_edit_${user.email}"),
           ) {
@@ -1115,6 +1172,191 @@ private fun AuthorizedUserCard(
               contentDescription = "Eliminar usuario ${user.displayName}",
               tint = MaterialTheme.colorScheme.error,
             )
+          }
+        }
+      }
+    }
+  }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AccessHistoryDialog(
+  logs: List<AccessLogEntry>,
+  filterAccountId: String?,
+  onClearFilter: () -> Unit,
+  onDeleteLog: (AccessLogEntry) -> Unit,
+  onDismiss: () -> Unit,
+) {
+  val filteredLogs =
+    remember(logs, filterAccountId) {
+      if (filterAccountId.isNullOrBlank()) logs
+      else logs.filter { it.accountId.equals(filterAccountId, ignoreCase = true) }
+    }
+  val dateFormatter =
+    remember { SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.forLanguageTag("es-AR")) }
+
+  Dialog(
+    onDismissRequest = onDismiss,
+    properties = DialogProperties(usePlatformDefaultWidth = false),
+  ) {
+    Scaffold(
+      modifier = Modifier.fillMaxSize().testTag("access_history_dialog"),
+      topBar = {
+        Column {
+          TopAppBar(
+            title = {
+              Column {
+                Text(
+                  text = "Historial de accesos",
+                  style = MaterialTheme.typography.titleLarge,
+                  fontWeight = FontWeight.Bold,
+                )
+                Text(
+                  text =
+                    if (filterAccountId.isNullOrBlank()) {
+                      "Todos los ingresos registrados (${filteredLogs.size})"
+                    } else {
+                      "Filtrado por @$filterAccountId (${filteredLogs.size})"
+                    },
+                  style = MaterialTheme.typography.labelSmall,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+              }
+            },
+            navigationIcon = {
+              IconButton(
+                onClick = onDismiss,
+                modifier = Modifier.testTag("close_access_history_button"),
+              ) {
+                Icon(Icons.Filled.Close, contentDescription = "Cerrar historial de accesos")
+              }
+            },
+            actions = {
+              if (!filterAccountId.isNullOrBlank()) {
+                TextButton(onClick = onClearFilter) {
+                  Text("Ver todos")
+                }
+              }
+            },
+            colors =
+              TopAppBarDefaults.topAppBarColors(
+                containerColor = MaterialTheme.colorScheme.background
+              ),
+          )
+          AlbicelesteRibbonStripe(height = 4.dp, showSunBadge = true)
+        }
+      },
+    ) { innerPadding ->
+      if (filteredLogs.isEmpty()) {
+        Box(
+          modifier = Modifier.fillMaxSize().padding(innerPadding).padding(24.dp),
+          contentAlignment = Alignment.Center,
+        ) {
+          Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.History,
+              contentDescription = null,
+              tint = MaterialTheme.colorScheme.primary,
+              modifier = Modifier.size(40.dp),
+            )
+            Text(
+              text = "Sin accesos registrados todavía",
+              style = MaterialTheme.typography.titleMedium,
+              fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+              text =
+                "Cada vez que un usuario verifique su PIN o abra su sesión, quedará registrado acá con su fecha, hora y dispositivo.",
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+          }
+        }
+      } else {
+        LazyColumn(
+          modifier = Modifier.fillMaxSize().padding(innerPadding),
+          contentPadding = PaddingValues(16.dp),
+          verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+          items(filteredLogs, key = { it.id.ifBlank { "${it.accountId}_${it.timestampMillis}" } }) { entry ->
+            val isPinLogin = entry.eventType == AccessLogEntry.EVENT_PIN_LOGIN
+            Card(
+              modifier = Modifier.fillMaxWidth().testTag("access_log_row_${entry.id}"),
+              shape = MaterialTheme.shapes.medium,
+              colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+              border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            ) {
+              Row(
+                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+              ) {
+                Column(
+                  modifier = Modifier.weight(1f),
+                  verticalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                  Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                  ) {
+                    Text(
+                      text = entry.displayName.ifBlank { "@${entry.accountId}" },
+                      style = MaterialTheme.typography.titleSmall,
+                      fontWeight = FontWeight.Bold,
+                    )
+                    Surface(
+                      shape = RoundedCornerShape(8.dp),
+                      color =
+                        if (isPinLogin) MaterialTheme.colorScheme.tertiaryContainer
+                        else MaterialTheme.colorScheme.primaryContainer,
+                    ) {
+                      Text(
+                        text = if (isPinLogin) "Verificó PIN" else "Abrió sesión",
+                        style = MaterialTheme.typography.labelSmall,
+                        color =
+                          if (isPinLogin) MaterialTheme.colorScheme.onTertiaryContainer
+                          else MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                      )
+                    }
+                  }
+                  Text(
+                    text = "@${entry.accountId} · ${dateFormatter.format(Date(entry.timestampMillis))}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontFamily = FontFamily.Monospace,
+                  )
+                  Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                  ) {
+                    Icon(
+                      imageVector = Icons.Filled.Smartphone,
+                      contentDescription = null,
+                      tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                      modifier = Modifier.size(14.dp),
+                    )
+                    Text(
+                      text = entry.deviceInfo.ifBlank { "Dispositivo Android" },
+                      style = MaterialTheme.typography.labelSmall,
+                      color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                  }
+                }
+                IconButton(onClick = { onDeleteLog(entry) }) {
+                  Icon(
+                    imageVector = Icons.Filled.DeleteOutline,
+                    contentDescription = "Eliminar registro de acceso",
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(18.dp),
+                  )
+                }
+              }
+            }
           }
         }
       }

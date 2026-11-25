@@ -7,6 +7,7 @@ import com.example.data.model.FinancialTransaction
 import com.example.data.model.ProfileType
 import com.example.data.model.RemoteAppConfig
 import com.example.data.model.Reseller
+import com.example.data.model.ServicePlan
 import com.example.data.model.TransactionType
 import com.example.data.model.UserSettings
 import com.example.data.model.VpnAccount
@@ -14,6 +15,7 @@ import com.example.data.repository.MalvinasRepository
 import com.example.util.CloudBackupHelper
 import com.example.util.CloudBackupPayload
 import com.example.util.Formatters
+import com.example.util.PaymentReceiptData
 import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -72,6 +74,7 @@ data class DashboardData(
   val allVpnAccounts: List<VpnAccount>,
   val resellers: List<Reseller> = emptyList(),
   val allResellers: List<Reseller> = emptyList(),
+  val servicePlans: List<ServicePlan> = emptyList(),
   val summary: MonthlySummary,
   val settings: UserSettings = UserSettings(),
 )
@@ -135,6 +138,17 @@ class MainViewModel(
         initialValue = UiState.Loading,
       )
 
+  private val servicePlansState: StateFlow<UiState<List<ServicePlan>>> =
+    repository
+      .observeServicePlans(currentUserId)
+      .map<List<ServicePlan>, UiState<List<ServicePlan>>> { UiState.Success(it) }
+      .catch { error -> emit(UiState.Error(unwrapFirestoreMessage(error, "planes"))) }
+      .stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
+        initialValue = UiState.Loading,
+      )
+
   private val settingsState: StateFlow<UiState<UserSettings>> =
     repository
       .observeUserSettings(currentUserId)
@@ -147,20 +161,21 @@ class MainViewModel(
       )
 
   private val filterState = combine(_activeProfile, _selectedMonthKey, ::Pair)
-  private val catalogPairState = combine(vpnState, resellersState, ::Pair)
+  private val catalogTripleState = combine(vpnState, resellersState, servicePlansState, ::Triple)
 
   val dashboardState: StateFlow<UiState<DashboardData>> =
     combine(
         filterState,
         transactionsState,
-        catalogPairState,
+        catalogTripleState,
         settingsState,
-      ) { (profile, monthKey), txUi, (vpnUi, resellersUi), userSettingsUi ->
+      ) { (profile, monthKey), txUi, (vpnUi, resellersUi, plansUi), userSettingsUi ->
         val firstError =
           listOfNotNull(
               (txUi as? UiState.Error)?.message,
               (vpnUi as? UiState.Error)?.message,
               (resellersUi as? UiState.Error)?.message,
+              (plansUi as? UiState.Error)?.message,
               (userSettingsUi as? UiState.Error)?.message,
             )
             .firstOrNull()
@@ -171,6 +186,7 @@ class MainViewModel(
           txUi is UiState.Success &&
             vpnUi is UiState.Success &&
             resellersUi is UiState.Success &&
+            plansUi is UiState.Success &&
             userSettingsUi is UiState.Success
         ) {
           val profileAllTx = txUi.data
@@ -234,6 +250,7 @@ class MainViewModel(
               allVpnAccounts = vpnUi.data,
               resellers = profileResellers,
               allResellers = resellersUi.data,
+              servicePlans = plansUi.data,
               summary =
                 MonthlySummary(
                   totalIncome = income,
@@ -411,7 +428,11 @@ class MainViewModel(
     }
   }
 
-  fun toggleVpnPaid(vpn: VpnAccount, isPaid: Boolean) {
+  fun toggleVpnPaid(
+    vpn: VpnAccount,
+    isPaid: Boolean,
+    onReceiptReady: ((PaymentReceiptData) -> Unit)? = null,
+  ) {
     viewModelScope.launch {
       val updated =
         if (isPaid) {
@@ -422,6 +443,9 @@ class MainViewModel(
       val result = repository.updateVpnAccount(updated)
       if (result.isSuccess) {
         _snackbarEvents.tryEmit(if (isPaid) "Cliente marcado como pagado" else "Cliente marcado como pendiente")
+        if (isPaid) {
+          onReceiptReady?.invoke(buildVpnReceipt(updated, updated.expirationMillis))
+        }
       } else {
         _snackbarEvents.tryEmit("No se pudo actualizar el estado del cliente")
       }
@@ -451,7 +475,11 @@ class MainViewModel(
     }
   }
 
-  fun renewVpn(vpn: VpnAccount, recordIncome: Boolean? = null) {
+  fun renewVpn(
+    vpn: VpnAccount,
+    recordIncome: Boolean? = null,
+    onReceiptReady: ((PaymentReceiptData) -> Unit)? = null,
+  ) {
     val activeSettings = (dashboardState.value as? UiState.Success)?.data?.settings ?: UserSettings()
     val days = activeSettings.defaultVpnDays.toInt().coerceIn(1, 365)
     val shouldRecordIncome = recordIncome ?: activeSettings.autoRecordIncomeOnPay
@@ -462,8 +490,65 @@ class MainViewModel(
       val result = repository.renewVpnAccount(vpn, nextExp, monthKey, shouldRecordIncome)
       if (result.isSuccess) {
         _snackbarEvents.tryEmit("Cliente renovado +$days días (${Formatters.formatDate(nextExp)})")
+        onReceiptReady?.invoke(buildVpnReceipt(vpn, nextExp))
       } else {
         _snackbarEvents.tryEmit("Error al renovar cliente")
+      }
+    }
+  }
+
+  fun saveServicePlan(
+    existing: ServicePlan?,
+    name: String,
+    price: Double,
+    durationDays: Long,
+    targetType: String,
+  ) {
+    val safeTarget =
+      if (targetType == ServicePlan.TARGET_RESELLER) {
+        ServicePlan.TARGET_RESELLER
+      } else {
+        ServicePlan.TARGET_CLIENT
+      }
+    viewModelScope.launch {
+      val result =
+        if (existing == null) {
+          repository.addServicePlan(
+            ServicePlan(
+              userId = currentUserId,
+              name = name,
+              price = price,
+              durationDays = durationDays,
+              targetType = safeTarget,
+            )
+          )
+        } else {
+          repository.updateServicePlan(
+            existing.copy(
+              name = name,
+              price = price,
+              durationDays = durationDays,
+              targetType = safeTarget,
+            )
+          )
+        }
+      if (result.isSuccess) {
+        _snackbarEvents.tryEmit("Plan guardado en la nube")
+      } else {
+        _snackbarEvents.tryEmit(
+          result.exceptionOrNull()?.localizedMessage ?: "No se pudo guardar el plan"
+        )
+      }
+    }
+  }
+
+  fun deleteServicePlan(planId: String) {
+    viewModelScope.launch {
+      val result = repository.deleteServicePlan(planId)
+      if (result.isSuccess) {
+        _snackbarEvents.tryEmit("Plan eliminado")
+      } else {
+        _snackbarEvents.tryEmit("Error al eliminar el plan")
       }
     }
   }
@@ -577,6 +662,7 @@ class MainViewModel(
         transactions = data.allTransactions,
         vpnAccounts = data.allVpnAccounts,
         resellers = data.allResellers,
+        servicePlans = data.servicePlans,
       )
     return CloudBackupHelper.toJsonString(payload)
   }
@@ -685,7 +771,11 @@ class MainViewModel(
     }
   }
 
-  fun renewReseller30Days(reseller: Reseller, recordIncome: Boolean? = null) {
+  fun renewReseller30Days(
+    reseller: Reseller,
+    recordIncome: Boolean? = null,
+    onReceiptReady: ((PaymentReceiptData) -> Unit)? = null,
+  ) {
     val activeSettings = (dashboardState.value as? UiState.Success)?.data?.settings ?: UserSettings()
     val shouldRecordIncome = recordIncome ?: activeSettings.autoRecordIncomeOnPay
     val base = maxOf(reseller.expirationMillis, System.currentTimeMillis())
@@ -701,10 +791,49 @@ class MainViewModel(
         )
       if (result.isSuccess) {
         _snackbarEvents.tryEmit("Revendedor renovado +30 días (${Formatters.formatDate(nextExp)})")
+        onReceiptReady?.invoke(buildResellerReceipt(reseller, nextExp))
       } else {
         _snackbarEvents.tryEmit("Error al renovar ciclo del revendedor")
       }
     }
+  }
+
+  fun buildVpnReceipt(
+    vpn: VpnAccount,
+    nextExpirationMillis: Long = vpn.expirationMillis,
+  ): PaymentReceiptData {
+    val detail =
+      when {
+        vpn.planName.isNotBlank() && vpn.vpnUsername.isNotBlank() ->
+          "${vpn.planName} (@${vpn.vpnUsername})"
+        vpn.vpnUsername.isNotBlank() -> "@${vpn.vpnUsername}"
+        vpn.planName.isNotBlank() -> vpn.planName
+        else -> "Servicio contratado"
+      }
+    return PaymentReceiptData(
+      recipientName = vpn.clientName,
+      recipientPhone = vpn.clientPhone,
+      serviceDetail = detail,
+      amount = vpn.amountToCharge,
+      paidAtMillis = System.currentTimeMillis(),
+      nextExpirationMillis = nextExpirationMillis,
+    )
+  }
+
+  fun buildResellerReceipt(
+    reseller: Reseller,
+    nextExpirationMillis: Long = reseller.expirationMillis,
+  ): PaymentReceiptData {
+    val detail =
+      "Revendedor · ${reseller.creditsCount} créditos (${Formatters.formatCurrency(reseller.pricePerCredit)} c/u)"
+    return PaymentReceiptData(
+      recipientName = reseller.name,
+      recipientPhone = reseller.phone,
+      serviceDetail = detail,
+      amount = reseller.computedTotal,
+      paidAtMillis = System.currentTimeMillis(),
+      nextExpirationMillis = nextExpirationMillis,
+    )
   }
 
   fun adjustResellerCredits(reseller: Reseller, newCreditsCount: Long) {

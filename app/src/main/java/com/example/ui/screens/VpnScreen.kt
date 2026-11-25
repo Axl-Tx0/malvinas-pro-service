@@ -19,6 +19,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.AccountBalance
 import androidx.compose.material.icons.filled.Autorenew
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
@@ -28,6 +29,8 @@ import androidx.compose.material.icons.filled.EventAvailable
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.People
+import androidx.compose.material.icons.filled.ReceiptLong
+import androidx.compose.material.icons.filled.RocketLaunch
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -77,6 +80,9 @@ fun VpnScreen(
   onClearPromise: (VpnAccount) -> Unit,
   onEditVpn: (VpnAccount) -> Unit,
   onDeleteVpn: (VpnAccount) -> Unit,
+  onOpenQuickCollection: () -> Unit = {},
+  onShowReceipt: (VpnAccount) -> Unit = {},
+  onSendPaymentInfo: (VpnAccount) -> Unit = {},
   modifier: Modifier = Modifier,
 ) {
   var selectedFilter by remember { mutableStateOf(VpnFilter.ALL) }
@@ -263,6 +269,33 @@ fun VpnScreen(
       }
     }
 
+    if (data.summary.vpnUnpaidCount > 0) {
+      item {
+        FilledTonalButton(
+          onClick = onOpenQuickCollection,
+          modifier = Modifier.fillMaxWidth().testTag("vpn_open_quick_collection_button"),
+          shape = RoundedCornerShape(12.dp),
+          colors =
+            ButtonDefaults.filledTonalButtonColors(
+              containerColor = MaterialTheme.colorScheme.primaryContainer,
+              contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+            ),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.RocketLaunch,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+          )
+          Spacer(modifier = Modifier.width(8.dp))
+          Text(
+            text =
+              "Cola rápida de cobranza · ${data.summary.vpnUnpaidCount} pendiente(s)",
+            fontWeight = FontWeight.SemiBold,
+          )
+        }
+      }
+    }
+
     item {
       Row(
         modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -302,6 +335,8 @@ fun VpnScreen(
           onSendWhatsApp = { onSendWhatsApp(vpn) },
           onOpenPromiseEditor = { onOpenPromiseEditor(vpn) },
           onClearPromise = { onClearPromise(vpn) },
+          onShowReceipt = { onShowReceipt(vpn) },
+          onSendPaymentInfo = { onSendPaymentInfo(vpn) },
           onEdit = { onEditVpn(vpn) },
           onDelete = { onDeleteVpn(vpn) },
         )
@@ -319,6 +354,8 @@ private fun VpnAccountCard(
   onSendWhatsApp: () -> Unit,
   onOpenPromiseEditor: () -> Unit,
   onClearPromise: () -> Unit,
+  onShowReceipt: () -> Unit,
+  onSendPaymentInfo: () -> Unit,
   onEdit: () -> Unit,
   onDelete: () -> Unit,
 ) {
@@ -565,6 +602,18 @@ private fun VpnAccountCard(
           Text("Cobrar +${defaultVpnDays}d", maxLines = 1)
         }
 
+        IconButton(
+          onClick = onShowReceipt,
+          modifier = Modifier.testTag("vpn_receipt_button_${vpn.id}"),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.ReceiptLong,
+            contentDescription = "Enviar comprobante de pago",
+            tint =
+              if (vpn.isPaid) MaterialTheme.colorScheme.tertiary
+              else MaterialTheme.colorScheme.primary,
+          )
+        }
         IconButton(onClick = onEdit) {
           Icon(
             imageVector = Icons.Filled.Edit,
@@ -624,6 +673,17 @@ private fun VpnAccountCard(
             text = "WhatsApp",
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
+          )
+        }
+
+        IconButton(
+          onClick = onSendPaymentInfo,
+          modifier = Modifier.testTag("vpn_payment_info_button_${vpn.id}"),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.AccountBalance,
+            contentDescription = "Enviar datos de cobro (Alias / CBU)",
+            tint = MaterialTheme.colorScheme.primary,
           )
         }
       }

@@ -67,6 +67,7 @@ object WhatsAppHelper {
       }
     val businessName = settings.businessName.ifBlank { UserSettings.DEFAULT_BUSINESS_NAME }
     val template = settings.whatsappVpnTemplate.ifBlank { UserSettings.DEFAULT_VPN_TEMPLATE }
+    val paymentBlock = buildPaymentDetailsBlock(settings)
     return renderTemplate(
       template = template,
       variables =
@@ -79,8 +80,71 @@ object WhatsAppHelper {
           "monto" to amountText,
           "vencimiento" to dueDateText,
           "empresa" to businessName,
+          "datos_pago" to paymentBlock,
         ),
-    )
+    ).replace(Regex("\n{3,}"), "\n\n").trim()
+  }
+
+  fun buildPaymentDetailsBlock(settings: UserSettings): String {
+    val lines = buildList {
+      if (settings.paymentBankOrWallet.isNotBlank()) {
+        add("🏦 Medio: ${settings.paymentBankOrWallet.trim()}")
+      }
+      if (settings.paymentHolderName.isNotBlank()) {
+        add("👤 Titular: ${settings.paymentHolderName.trim()}")
+      }
+      if (settings.paymentAlias.isNotBlank()) {
+        add("🏷️ Alias: *${settings.paymentAlias.trim()}*")
+      }
+      if (settings.paymentCbuCvu.isNotBlank()) {
+        add("🔢 CBU/CVU: ${settings.paymentCbuCvu.trim()}")
+      }
+      if (settings.paymentLink.isNotBlank()) {
+        add("🔗 Link de pago: ${settings.paymentLink.trim()}")
+      }
+    }
+    if (lines.isEmpty()) return ""
+    return "💳 *Datos para transferir / pagar:*\n" + lines.joinToString("\n")
+  }
+
+  fun buildStandalonePaymentInfoMessage(
+    settings: UserSettings,
+    recipientName: String = "",
+    amount: Double? = null,
+    serviceDetail: String = "",
+  ): String {
+    val businessName = settings.businessName.ifBlank { UserSettings.DEFAULT_BUSINESS_NAME }
+    val block = buildPaymentDetailsBlock(settings)
+    if (block.isBlank()) return ""
+    val greeting =
+      if (recipientName.isNotBlank()) {
+        "👋 ¡Hola, ${recipientName.trim()}!"
+      } else {
+        "👋 ¡Hola!"
+      }
+    val detailLines = buildList {
+      if (serviceDetail.isNotBlank()) {
+        add("📡 Servicio: ${serviceDetail.trim()}")
+      }
+      if (amount != null && amount > 0.0) {
+        add("💰 Importe: *${Formatters.formatCurrency(amount)}*")
+      }
+    }
+    val detailSection =
+      if (detailLines.isNotEmpty()) {
+        "\n\n" + detailLines.joinToString("\n")
+      } else {
+        ""
+      }
+    return """
+      $greeting$detailSection
+
+      $block
+
+      📩 Cuando realices el pago, enviame el comprobante por acá.
+      ¡Muchas gracias! 💙
+      $businessName 🌐
+    """.trimIndent()
   }
 
   fun buildResellerSummaryMessage(
@@ -118,6 +182,48 @@ object WhatsAppHelper {
     """.trimIndent()
   }
 
+  fun buildPaymentReceiptMessage(
+    receipt: PaymentReceiptData,
+    settings: UserSettings = UserSettings(),
+  ): String {
+    val businessName = settings.businessName.ifBlank { UserSettings.DEFAULT_BUSINESS_NAME }
+    val amountText = Formatters.formatCurrency(receipt.amount)
+    val paidDateText = Formatters.formatDate(receipt.paidAtMillis)
+    val nextDueLine =
+      if (receipt.nextExpirationMillis > 0L) {
+        "\n📅 Próximo vencimiento: ${Formatters.formatDate(receipt.nextExpirationMillis)}"
+      } else {
+        ""
+      }
+    val detailLine =
+      if (receipt.serviceDetail.isNotBlank()) {
+        "\n📡 Detalle: ${receipt.serviceDetail}"
+      } else {
+        ""
+      }
+    return """
+      ✅ *COMPROBANTE DE PAGO*
+      🏢 $businessName
+      🧾 N° ${receipt.receiptCode}
+
+      👤 Cliente: ${receipt.recipientName}$detailLine
+      💰 Monto abonado: *$amountText*
+      🗓️ Fecha de pago: $paidDateText$nextDueLine
+      📌 Estado: *PAGADO*
+
+      ¡Muchas gracias por tu pago y confianza! 💙
+      $businessName 🌐
+    """.trimIndent()
+  }
+
+  fun generateReceiptCode(nowMillis: Long = System.currentTimeMillis()): String {
+    val cal = java.util.Calendar.getInstance().apply { timeInMillis = nowMillis }
+    val day = cal.get(java.util.Calendar.DAY_OF_MONTH)
+    val month = cal.get(java.util.Calendar.MONTH) + 1
+    val suffix = ((nowMillis / 100L) % 10_000L).toInt().toString().padStart(4, '0')
+    return "MP-%02d%02d-%s".format(java.util.Locale.US, day, month, suffix)
+  }
+
   fun buildWhatsAppIntent(
     rawPhone: String,
     message: String,
@@ -151,3 +257,13 @@ object WhatsAppHelper {
     }
   }
 }
+
+data class PaymentReceiptData(
+  val recipientName: String,
+  val recipientPhone: String,
+  val serviceDetail: String,
+  val amount: Double,
+  val paidAtMillis: Long = System.currentTimeMillis(),
+  val nextExpirationMillis: Long = 0L,
+  val receiptCode: String = WhatsAppHelper.generateReceiptCode(),
+)

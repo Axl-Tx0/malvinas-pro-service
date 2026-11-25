@@ -104,6 +104,7 @@ import com.example.R
 import com.example.data.model.AdminPinInboxItem
 import com.example.data.model.FinancialTransaction
 import com.example.data.model.Reseller
+import com.example.data.model.ServicePlan
 import com.example.data.model.UserSettings
 import com.example.data.model.VpnAccount
 import com.example.data.repository.MalvinasRepository
@@ -112,8 +113,13 @@ import com.example.ui.auth.signOut
 import com.example.ui.components.AccountAndNotificationDialog
 import com.example.ui.components.AlbicelesteRibbonStripe
 import com.example.ui.components.MonthSelectorBar
+import com.example.ui.components.PaymentDetailsDialog
+import com.example.ui.components.PaymentDetailsTarget
 import com.example.ui.components.PaymentPromiseSheet
+import com.example.ui.components.PaymentReceiptDialog
+import com.example.ui.components.QuickCollectionDialog
 import com.example.ui.components.ResellerEditorSheet
+import com.example.ui.components.ServicePlansManagerDialog
 import com.example.ui.components.TransactionEditorSheet
 import com.example.ui.components.UserAccessAdminDialog
 import com.example.ui.components.VpnEditorSheet
@@ -128,8 +134,12 @@ import com.example.data.repository.AccessControlRepository
 import com.example.util.AccessControlConfig
 import com.example.util.AppUpdateHelper
 import com.example.util.CloudBackupHelper
+import com.example.util.FinancialExportRequest
+import com.example.util.FinancialReportExporter
+import com.example.util.Formatters
 import com.example.util.GitHubReleaseUpdater
 import com.example.util.GitHubUpdateUiState
+import com.example.util.PaymentReceiptData
 import com.example.util.WhatsAppHelper
 import com.google.firebase.Firebase
 import com.google.firebase.auth.auth
@@ -335,6 +345,85 @@ fun MainAppScaffold(
       }
     }
 
+  var pendingPdfExportRequest by remember { mutableStateOf<FinancialExportRequest?>(null) }
+  var pendingCsvExportRequest by remember { mutableStateOf<FinancialExportRequest?>(null) }
+
+  val exportPdfLauncher =
+    rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/pdf")) { uri ->
+      val req = pendingPdfExportRequest
+      pendingPdfExportRequest = null
+      if (uri != null && req != null) {
+        coroutineScope.launch {
+          val ok =
+            withContext(Dispatchers.IO) {
+              runCatching {
+                val bytes = FinancialReportExporter.buildPdfBytes(req)
+                context.contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+                  ?: error("No se pudo abrir archivo")
+              }.isSuccess
+            }
+          viewModel.notifyMessage(
+            if (ok) "Balance PDF guardado correctamente"
+            else "No se pudo guardar el archivo PDF"
+          )
+        }
+      }
+    }
+
+  val exportCsvLauncher =
+    rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri ->
+      val req = pendingCsvExportRequest
+      pendingCsvExportRequest = null
+      if (uri != null && req != null) {
+        coroutineScope.launch {
+          val ok =
+            withContext(Dispatchers.IO) {
+              runCatching {
+                val csv = FinancialReportExporter.buildCsvReport(req)
+                context.contentResolver.openOutputStream(uri)?.use {
+                  it.write(csv.toByteArray(Charsets.UTF_8))
+                } ?: error("No se pudo abrir archivo")
+              }.isSuccess
+            }
+          viewModel.notifyMessage(
+            if (ok) "Planilla Excel (CSV) guardada correctamente"
+            else "No se pudo guardar la planilla CSV"
+          )
+        }
+      }
+    }
+
+  val launchPdfExport: (FinancialExportRequest) -> Unit = { req ->
+    pendingPdfExportRequest = req
+    exportPdfLauncher.launch(FinancialReportExporter.suggestedPdfFileName(req.fileSlug))
+  }
+
+  val launchCsvExport: (FinancialExportRequest) -> Unit = { req ->
+    pendingCsvExportRequest = req
+    exportCsvLauncher.launch(FinancialReportExporter.suggestedCsvFileName(req.fileSlug))
+  }
+
+  val sharePdfReport: (FinancialExportRequest) -> Unit = { req ->
+    coroutineScope.launch {
+      val bytes = withContext(Dispatchers.IO) { runCatching { FinancialReportExporter.buildPdfBytes(req) }.getOrNull() }
+      if (bytes == null) {
+        viewModel.notifyMessage("No se pudo generar el reporte PDF")
+      } else {
+        val shared =
+          FinancialReportExporter.shareReportBytes(
+            context = context,
+            fileName = FinancialReportExporter.suggestedPdfFileName(req.fileSlug),
+            mimeType = "application/pdf",
+            bytes = bytes,
+            chooserTitle = "Compartir balance (${req.periodTitle})",
+          )
+        if (!shared) {
+          viewModel.notifyMessage("No se encontró una app para compartir el PDF")
+        }
+      }
+    }
+  }
+
   var hasNotificationPermission by remember {
     mutableStateOf(VpnNotificationManager.hasNotificationPermission(context))
   }
@@ -374,6 +463,11 @@ fun MainAppScaffold(
   var editingReseller by remember { mutableStateOf<Reseller?>(null) }
   var showResellerSheet by remember { mutableStateOf(false) }
   var deleteTarget by remember { mutableStateOf<DeleteTarget?>(null) }
+  var pendingReceipt by remember { mutableStateOf<PaymentReceiptData?>(null) }
+  var pendingPaymentDetailsTarget by remember { mutableStateOf<PaymentDetailsTarget?>(null) }
+  var showPlansManager by remember { mutableStateOf(false) }
+  var plansManagerInitialTarget by remember { mutableStateOf(ServicePlan.TARGET_CLIENT) }
+  var showQuickCollection by remember { mutableStateOf(false) }
 
   val summary = (dashboardUi as? UiState.Success)?.data?.summary
   val vpnDueBadgeCount = (summary?.vpnDueSoonCount ?: 0) + (summary?.vpnPromiseDueTodayCount ?: 0)
@@ -656,6 +750,15 @@ fun MainAppScaffold(
                   startDestination = ROUTE_OVERVIEW,
                 ) {
                   composable(ROUTE_OVERVIEW) {
+                    val monthExportReq =
+                      remember(state.data.selectedMonthKey, state.data.transactions, state.data.settings.businessName) {
+                        FinancialExportRequest(
+                          businessName = state.data.settings.businessName,
+                          periodTitle = Formatters.formatMonthTitle(state.data.selectedMonthKey),
+                          fileSlug = state.data.selectedMonthKey,
+                          transactions = state.data.transactions,
+                        )
+                      }
                     OverviewScreen(
                       data = state.data,
                       onEditTransaction = { tx ->
@@ -666,6 +769,12 @@ fun MainAppScaffold(
                       onOpenVpnTab = { navigateToTab(ROUTE_VPN) },
                       onOpenResellersTab = { navigateToTab(ROUTE_RESELLERS) },
                       onOpenFinancialSummary = { navigateToTab(ROUTE_FINANCIAL_SUMMARY) },
+                      onOpenQuickCollection = { showQuickCollection = true },
+                      onOpenPaymentDetails = {
+                        pendingPaymentDetailsTarget = PaymentDetailsTarget()
+                      },
+                      onExportMonthPdf = { launchPdfExport(monthExportReq) },
+                      onExportMonthCsv = { launchCsvExport(monthExportReq) },
                     )
                   }
                   composable(ROUTE_FINANCIAL_SUMMARY) {
@@ -675,6 +784,9 @@ fun MainAppScaffold(
                         editingTransaction = null
                         showTransactionSheet = true
                       },
+                      onExportPdf = launchPdfExport,
+                      onExportCsv = launchCsvExport,
+                      onSharePdf = sharePdfReport,
                     )
                   }
                   composable(ROUTE_VPN) {
@@ -682,9 +794,19 @@ fun MainAppScaffold(
                       data = state.data,
                       hasNotificationPermission = hasNotificationPermission,
                       onRequestNotificationPermission = requestNotificationPermission,
-                      onTogglePaid = viewModel::toggleVpnPaid,
+                      onTogglePaid = { vpn, paid ->
+                        viewModel.toggleVpnPaid(
+                          vpn = vpn,
+                          isPaid = paid,
+                          onReceiptReady = { receipt -> pendingReceipt = receipt },
+                        )
+                      },
                       onRenew30Days = { vpn ->
-                        viewModel.renewVpn(vpn, recordIncome = state.data.settings.autoRecordIncomeOnPay)
+                        viewModel.renewVpn(
+                          vpn = vpn,
+                          recordIncome = state.data.settings.autoRecordIncomeOnPay,
+                          onReceiptReady = { receipt -> pendingReceipt = receipt },
+                        )
                       },
                       onSendWhatsApp = { vpn ->
                         val msg =
@@ -715,6 +837,22 @@ fun MainAppScaffold(
                         viewModel.savePaymentPromise(vpn, 0L, "")
                       },
                       onDeleteVpn = { vpn -> deleteTarget = DeleteTarget.Vpn(vpn) },
+                      onOpenQuickCollection = { showQuickCollection = true },
+                      onShowReceipt = { vpn -> pendingReceipt = viewModel.buildVpnReceipt(vpn) },
+                      onSendPaymentInfo = { vpn ->
+                        val detail =
+                          listOfNotNull(
+                            vpn.planName.takeIf { it.isNotBlank() },
+                            vpn.vpnUsername.takeIf { it.isNotBlank() }?.let { "@$it" },
+                          ).joinToString(" · ")
+                        pendingPaymentDetailsTarget =
+                          PaymentDetailsTarget(
+                            recipientName = vpn.clientName,
+                            recipientPhone = vpn.clientPhone,
+                            serviceDetail = detail,
+                            amount = vpn.amountToCharge,
+                          )
+                      },
                     )
                   }
                   composable(ROUTE_RESELLERS) {
@@ -725,6 +863,7 @@ fun MainAppScaffold(
                         viewModel.renewReseller30Days(
                           reseller = reseller,
                           recordIncome = state.data.settings.autoRecordIncomeOnPay,
+                          onReceiptReady = { receipt -> pendingReceipt = receipt },
                         )
                       },
                       onSendWhatsApp = { reseller ->
@@ -745,6 +884,18 @@ fun MainAppScaffold(
                             snackbarHostState.showSnackbar("No se pudo abrir WhatsApp en este dispositivo")
                           }
                         }
+                      },
+                      onShowReceipt = { reseller ->
+                        pendingReceipt = viewModel.buildResellerReceipt(reseller)
+                      },
+                      onSendPaymentInfo = { reseller ->
+                        pendingPaymentDetailsTarget =
+                          PaymentDetailsTarget(
+                            recipientName = reseller.name,
+                            recipientPhone = reseller.phone,
+                            serviceDetail = "${reseller.creditsCount} crédito(s) revendedor",
+                            amount = reseller.computedTotal,
+                          )
                       },
                       onEditReseller = { reseller ->
                         editingReseller = reseller
@@ -852,6 +1003,11 @@ fun MainAppScaffold(
                       },
                       isAdmin = isAdmin,
                       onOpenUserAccessManager = { showUserAccessAdminDialog = true },
+                      onOpenServicePlansManager = {
+                        plansManagerInitialTarget = ServicePlan.TARGET_CLIENT
+                        showPlansManager = true
+                      },
+                      onNotifyMessage = viewModel::notifyMessage,
                     )
                   }
                 }
@@ -884,10 +1040,17 @@ fun MainAppScaffold(
     )
   }
 
+  val currentServicePlans = (dashboardUi as? UiState.Success)?.data?.servicePlans.orEmpty()
+
   if (showVpnSheet) {
     VpnEditorSheet(
       existing = editingVpn,
       defaultProfile = activeProfile,
+      savedPlans = currentServicePlans,
+      onManagePlans = {
+        plansManagerInitialTarget = ServicePlan.TARGET_CLIENT
+        showPlansManager = true
+      },
       onSave = { profile, name, phone, username, plan, amount, expMillis, isPaid, notify, promiseMillis, promiseNote, notes ->
         if ((notify || promiseMillis > 0L) && !hasNotificationPermission) {
           requestNotificationPermission()
@@ -937,6 +1100,11 @@ fun MainAppScaffold(
     ResellerEditorSheet(
       existing = editingReseller,
       defaultProfile = activeProfile,
+      savedPlans = currentServicePlans,
+      onManagePlans = {
+        plansManagerInitialTarget = ServicePlan.TARGET_RESELLER
+        showPlansManager = true
+      },
       onSave = { profile, name, phone, creditsCount, pricePerCredit, expirationMillis, notes ->
         viewModel.saveReseller(
           existing = editingReseller,
@@ -951,6 +1119,120 @@ fun MainAppScaffold(
         showResellerSheet = false
       },
       onDismiss = { showResellerSheet = false },
+    )
+  }
+
+  if (showPlansManager) {
+    ServicePlansManagerDialog(
+      plans = currentServicePlans,
+      initialTargetType = plansManagerInitialTarget,
+      onSavePlan = viewModel::saveServicePlan,
+      onDeletePlan = viewModel::deleteServicePlan,
+      onDismiss = { showPlansManager = false },
+    )
+  }
+
+  if (showQuickCollection) {
+    val activeVpns = (dashboardUi as? UiState.Success)?.data?.vpnAccounts.orEmpty()
+    QuickCollectionDialog(
+      vpnAccounts = activeVpns,
+      settings = currentSettings,
+      onSendWhatsApp = { vpn ->
+        val msg =
+          WhatsAppHelper.buildVpnReminderMessage(
+            vpn = vpn,
+            settings = currentSettings,
+          )
+        if (
+          !WhatsAppHelper.openWhatsApp(
+            context = context,
+            rawPhone = vpn.clientPhone,
+            message = msg,
+            defaultCountryCode = currentSettings.defaultCountryCode,
+          )
+        ) {
+          coroutineScope.launch {
+            snackbarHostState.showSnackbar("No se pudo abrir WhatsApp en este dispositivo")
+          }
+        }
+      },
+      onSendPaymentInfo = { vpn ->
+        val detail =
+          listOfNotNull(
+            vpn.planName.takeIf { it.isNotBlank() },
+            vpn.vpnUsername.takeIf { it.isNotBlank() }?.let { "@$it" },
+          ).joinToString(" · ")
+        pendingPaymentDetailsTarget =
+          PaymentDetailsTarget(
+            recipientName = vpn.clientName,
+            recipientPhone = vpn.clientPhone,
+            serviceDetail = detail,
+            amount = vpn.amountToCharge,
+          )
+      },
+      onCollectAndRenew = { vpn ->
+        viewModel.renewVpn(
+          vpn = vpn,
+          recordIncome = currentSettings.autoRecordIncomeOnPay,
+          onReceiptReady = { receipt -> pendingReceipt = receipt },
+        )
+      },
+      onDismiss = { showQuickCollection = false },
+    )
+  }
+
+  pendingPaymentDetailsTarget?.let { target ->
+    PaymentDetailsDialog(
+      target = target,
+      settings = currentSettings,
+      onSendWhatsApp = { phone, messageText ->
+        val opened =
+          WhatsAppHelper.openWhatsApp(
+            context = context,
+            rawPhone = phone,
+            message = messageText,
+            defaultCountryCode = currentSettings.defaultCountryCode,
+          )
+        if (!opened) {
+          coroutineScope.launch {
+            snackbarHostState.showSnackbar("No se pudo abrir WhatsApp en este dispositivo")
+          }
+        }
+      },
+      onCopyText = { label, text ->
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText(label, text))
+        viewModel.notifyMessage("$label copiado al portapapeles")
+      },
+      onOpenSettings = { navigateToTab(ROUTE_SETTINGS) },
+      onDismiss = { pendingPaymentDetailsTarget = null },
+    )
+  }
+
+  pendingReceipt?.let { receipt ->
+    PaymentReceiptDialog(
+      receipt = receipt,
+      settings = currentSettings,
+      onSendWhatsApp = { messageText ->
+        val opened =
+          WhatsAppHelper.openWhatsApp(
+            context = context,
+            rawPhone = receipt.recipientPhone,
+            message = messageText,
+            defaultCountryCode = currentSettings.defaultCountryCode,
+          )
+        if (!opened) {
+          coroutineScope.launch {
+            snackbarHostState.showSnackbar("No se pudo abrir WhatsApp en este dispositivo")
+          }
+        }
+      },
+      onCopyReceipt = { messageText ->
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("Comprobante de pago", messageText))
+        viewModel.notifyMessage("Comprobante copiado al portapapeles")
+      },
+      onDismiss = { pendingReceipt = null },
     )
   }
 

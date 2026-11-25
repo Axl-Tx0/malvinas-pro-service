@@ -18,9 +18,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.AccountBalance
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Business
+import androidx.compose.material.icons.filled.LocalOffer
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Remove
@@ -54,8 +56,10 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.example.data.model.ServicePlan
 import com.example.data.model.UserSettings
 import com.example.data.model.VpnAccount
+import com.example.ui.auth.AppLockSettingsCard
 import com.example.ui.components.AppUpdateSectionCard
 import com.example.ui.components.CloudSyncAndBackupCard
 import com.example.ui.viewmodel.CloudSyncUiState
@@ -73,7 +77,18 @@ private val VPN_VARIABLES =
     "{periodo}",
     "{monto}",
     "{vencimiento}",
+    "{datos_pago}",
     "{empresa}",
+  )
+
+private val WALLET_PRESETS =
+  listOf(
+    "Mercado Pago",
+    "Banco Nación",
+    "Ualá",
+    "Brubank",
+    "Cuenta DNI",
+    "Personal Pay",
   )
 
 private val REMINDER_HOUR_PRESETS = listOf(8, 9, 12, 18, 20)
@@ -104,6 +119,8 @@ fun SettingsScreen(
   onSignOut: () -> Unit,
   isAdmin: Boolean = false,
   onOpenUserAccessManager: () -> Unit = {},
+  onOpenServicePlansManager: () -> Unit = {},
+  onNotifyMessage: (String) -> Unit = {},
   modifier: Modifier = Modifier,
 ) {
   val saved = data.settings
@@ -113,6 +130,11 @@ fun SettingsScreen(
   var reminderHour by remember(saved) { mutableIntStateOf(saved.reminderHour.toInt().coerceIn(0, 23)) }
   var defaultVpnDaysText by remember(saved) { mutableStateOf(saved.defaultVpnDays.coerceIn(1L, 365L).toString()) }
   var autoRecordIncome by remember(saved) { mutableStateOf(saved.autoRecordIncomeOnPay) }
+  var paymentBankOrWallet by remember(saved) { mutableStateOf(saved.paymentBankOrWallet) }
+  var paymentHolderName by remember(saved) { mutableStateOf(saved.paymentHolderName) }
+  var paymentAlias by remember(saved) { mutableStateOf(saved.paymentAlias) }
+  var paymentCbuCvu by remember(saved) { mutableStateOf(saved.paymentCbuCvu) }
+  var paymentLink by remember(saved) { mutableStateOf(saved.paymentLink) }
 
   val parsedVpnDays = defaultVpnDaysText.toIntOrNull()?.coerceIn(1, 365) ?: 30
   val preservedClientTemplate = saved.whatsappClientTemplate.ifBlank { UserSettings.DEFAULT_CLIENT_TEMPLATE }
@@ -127,6 +149,11 @@ fun SettingsScreen(
       reminderHour = reminderHour.toLong(),
       defaultVpnDays = parsedVpnDays.toLong(),
       autoRecordIncomeOnPay = autoRecordIncome,
+      paymentAlias = paymentAlias,
+      paymentCbuCvu = paymentCbuCvu,
+      paymentHolderName = paymentHolderName,
+      paymentBankOrWallet = paymentBankOrWallet,
+      paymentLink = paymentLink,
     )
 
   val hasUnsavedChanges =
@@ -135,7 +162,12 @@ fun SettingsScreen(
       draftSettings.defaultCountryCode != saved.defaultCountryCode ||
       draftSettings.reminderHour != saved.reminderHour ||
       draftSettings.defaultVpnDays != saved.defaultVpnDays ||
-      draftSettings.autoRecordIncomeOnPay != saved.autoRecordIncomeOnPay
+      draftSettings.autoRecordIncomeOnPay != saved.autoRecordIncomeOnPay ||
+      draftSettings.paymentAlias.trim() != saved.paymentAlias.trim() ||
+      draftSettings.paymentCbuCvu.trim() != saved.paymentCbuCvu.trim() ||
+      draftSettings.paymentHolderName.trim() != saved.paymentHolderName.trim() ||
+      draftSettings.paymentBankOrWallet.trim() != saved.paymentBankOrWallet.trim() ||
+      draftSettings.paymentLink.trim() != saved.paymentLink.trim()
 
   val sampleVpn =
     remember {
@@ -231,6 +263,35 @@ fun SettingsScreen(
     }
 
     item {
+      val clientPlansCount = data.servicePlans.count { it.targetType == ServicePlan.TARGET_CLIENT }
+      val resellerPlansCount = data.servicePlans.count { it.targetType == ServicePlan.TARGET_RESELLER }
+      SettingsSectionCard(
+        icon = Icons.Filled.LocalOffer,
+        title = "Planes y precios guardados",
+        subtitle =
+          "$clientPlansCount plan(es) de clientes · $resellerPlansCount precio(s) de revendedores sincronizados en la nube.",
+      ) {
+        OutlinedButton(
+          onClick = onOpenServicePlansManager,
+          modifier = Modifier.fillMaxWidth().testTag("settings_open_service_plans_button"),
+          shape = RoundedCornerShape(12.dp),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.LocalOffer,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+          )
+          Spacer(modifier = Modifier.width(8.dp))
+          Text("Gestionar planes y precios")
+        }
+      }
+    }
+
+    item {
+      AppLockSettingsCard(onNotify = onNotifyMessage)
+    }
+
+    item {
       SettingsSectionCard(
         icon = Icons.Filled.Business,
         title = "Negocio y prefijo WhatsApp",
@@ -258,6 +319,144 @@ fun SettingsScreen(
           singleLine = true,
           modifier = Modifier.fillMaxWidth().testTag("settings_country_code_input"),
         )
+      }
+    }
+
+    item {
+      val paymentPreview =
+        remember(draftSettings) {
+          WhatsAppHelper.buildStandalonePaymentInfoMessage(settings = draftSettings)
+        }
+      SettingsSectionCard(
+        icon = Icons.Filled.AccountBalance,
+        title = "Datos de cobro (Alias / CBU / CVU / MP)",
+        subtitle =
+          "Guardá tus datos de transferencia para enviarlos en un toque o usarlos con {datos_pago} en tus recordatorios.",
+      ) {
+        Text(
+          text = "Billetera o banco rápido:",
+          style = MaterialTheme.typography.labelMedium,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(
+          modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+          WALLET_PRESETS.forEach { preset ->
+            FilterChip(
+              selected = paymentBankOrWallet.equals(preset, ignoreCase = true),
+              onClick = { paymentBankOrWallet = preset },
+              label = { Text(preset) },
+            )
+          }
+        }
+        OutlinedTextField(
+          value = paymentBankOrWallet,
+          onValueChange = { if (it.length <= 60) paymentBankOrWallet = it },
+          label = { Text("Billetera o banco") },
+          placeholder = { Text("Ej: Mercado Pago, Banco Nación, Ualá") },
+          singleLine = true,
+          modifier = Modifier.fillMaxWidth().testTag("settings_payment_bank_input"),
+        )
+        OutlinedTextField(
+          value = paymentHolderName,
+          onValueChange = { if (it.length <= 80) paymentHolderName = it },
+          label = { Text("Titular de la cuenta") },
+          placeholder = { Text("Ej: Nombre y Apellido") },
+          singleLine = true,
+          modifier = Modifier.fillMaxWidth().testTag("settings_payment_holder_input"),
+        )
+        OutlinedTextField(
+          value = paymentAlias,
+          onValueChange = { if (it.length <= 80) paymentAlias = it },
+          label = { Text("Alias") },
+          placeholder = { Text("Ej: malvinas.pro.mp") },
+          singleLine = true,
+          modifier = Modifier.fillMaxWidth().testTag("settings_payment_alias_input"),
+        )
+        OutlinedTextField(
+          value = paymentCbuCvu,
+          onValueChange = { if (it.length <= 40) paymentCbuCvu = it },
+          label = { Text("CBU / CVU") },
+          placeholder = { Text("Ej: 00000031000...") },
+          keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+          singleLine = true,
+          modifier = Modifier.fillMaxWidth().testTag("settings_payment_cbu_input"),
+        )
+        OutlinedTextField(
+          value = paymentLink,
+          onValueChange = { if (it.length <= 250) paymentLink = it },
+          label = { Text("Link de pago (opcional)") },
+          placeholder = { Text("Ej: https://link.mercadopago.com.ar/...") },
+          singleLine = true,
+          modifier = Modifier.fillMaxWidth().testTag("settings_payment_link_input"),
+        )
+
+        if (paymentPreview.isNotBlank()) {
+          Text(
+            text = "Vista previa de datos de cobro",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+          )
+          Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.45f),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+          ) {
+            Text(
+              text = paymentPreview,
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurface,
+              modifier = Modifier.padding(12.dp),
+            )
+          }
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+          ) {
+            OutlinedButton(
+              onClick = { onTestWhatsAppMessage(paymentPreview, draftSettings.defaultCountryCode) },
+              modifier = Modifier.weight(1f).testTag("settings_test_payment_whatsapp_button"),
+              shape = RoundedCornerShape(12.dp),
+            ) {
+              Icon(
+                imageVector = Icons.AutoMirrored.Filled.Send,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+              )
+              Spacer(modifier = Modifier.width(6.dp))
+              Text("Probar en WhatsApp", maxLines = 1)
+            }
+            Button(
+              onClick = { onSaveSettings(draftSettings) },
+              modifier = Modifier.weight(1f).testTag("settings_save_payment_info_button"),
+              shape = RoundedCornerShape(12.dp),
+            ) {
+              Icon(
+                imageVector = Icons.Filled.Save,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+              )
+              Spacer(modifier = Modifier.width(6.dp))
+              Text("Guardar datos", maxLines = 1)
+            }
+          }
+        } else {
+          Button(
+            onClick = { onSaveSettings(draftSettings) },
+            modifier = Modifier.fillMaxWidth().testTag("settings_save_payment_info_button"),
+            shape = RoundedCornerShape(12.dp),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.Save,
+              contentDescription = null,
+              modifier = Modifier.size(16.dp),
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text("Guardar datos de cobro")
+          }
+        }
       }
     }
 

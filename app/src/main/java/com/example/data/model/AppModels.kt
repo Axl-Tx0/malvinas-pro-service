@@ -92,9 +92,22 @@ data class UserSettings(
   val reminderHour: Long = 9L,
   val defaultVpnDays: Long = 30L,
   val autoRecordIncomeOnPay: Boolean = true,
+  val paymentAlias: String = "",
+  val paymentCbuCvu: String = "",
+  val paymentHolderName: String = "",
+  val paymentBankOrWallet: String = "",
+  val paymentLink: String = "",
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null,
 ) {
+  val hasPaymentInfo: Boolean
+    get() =
+      paymentAlias.isNotBlank() ||
+        paymentCbuCvu.isNotBlank() ||
+        paymentHolderName.isNotBlank() ||
+        paymentBankOrWallet.isNotBlank() ||
+        paymentLink.isNotBlank()
+
   companion object {
     const val PREFERENCES_DOC_ID = "preferences"
     const val DEFAULT_BUSINESS_NAME = "MALVINAS PRO SERVICE"
@@ -207,3 +220,39 @@ data class AdminPinInboxItem(
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null,
 )
+
+@androidx.annotation.Keep
+@IgnoreExtraProperties
+data class ServicePlan(
+  @DocumentId val id: String = "",
+  val userId: String = "",
+  val name: String = "",
+  val price: Double = 0.0,
+  val durationDays: Long = 30L,
+  val targetType: String = TARGET_CLIENT,
+  @ServerTimestamp val createdAt: Timestamp? = null,
+  @ServerTimestamp val updatedAt: Timestamp? = null,
+) {
+  companion object {
+    const val TARGET_CLIENT = "client"
+    const val TARGET_RESELLER = "reseller"
+  }
+}
+
+@androidx.annotation.Keep
+@IgnoreExtraProperties
+data class AccessLogEntry(
+  @DocumentId val id: String = "",
+  val accountId: String = "",
+  val displayName: String = "",
+  val uid: String = "",
+  val deviceInfo: String = "",
+  val eventType: String = EVENT_PIN_LOGIN,
+  val timestampMillis: Long = 0L,
+  @ServerTimestamp val createdAt: Timestamp? = null,
+) {
+  companion object {
+    const val EVENT_PIN_LOGIN = "pin_login"
+    const val EVENT_SESSION_ACCESS = "session_access"
+  }
+}

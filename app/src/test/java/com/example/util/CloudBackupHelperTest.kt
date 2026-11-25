@@ -2,6 +2,7 @@ package com.example.util
 
 import com.example.data.model.FinancialTransaction
 import com.example.data.model.Reseller
+import com.example.data.model.ServicePlan
 import com.example.data.model.UserSettings
 import com.example.data.model.VpnAccount
 import org.junit.Assert.assertEquals
@@ -72,6 +73,15 @@ class CloudBackupHelperTest {
               notes = "Créditos mensuales",
             )
           ),
+        servicePlans =
+          listOf(
+            ServicePlan(
+              name = "VPN Full 30 días",
+              price = 7500.0,
+              durationDays = 30L,
+              targetType = ServicePlan.TARGET_CLIENT,
+            )
+          ),
       )
 
     val json = CloudBackupHelper.toJsonString(payload)
@@ -100,6 +110,12 @@ class CloudBackupHelperTest {
     assertEquals(1200.0, restored.resellers.first().pricePerCredit, 0.01)
     assertEquals(36000.0, restored.resellers.first().computedTotal, 0.01)
     assertEquals(1_762_000_000_000L, restored.resellers.first().expirationMillis)
+
+    assertEquals(1, restored.servicePlans.size)
+    assertEquals("VPN Full 30 días", restored.servicePlans.first().name)
+    assertEquals(7500.0, restored.servicePlans.first().price, 0.01)
+    assertEquals(30L, restored.servicePlans.first().durationDays)
+    assertEquals(ServicePlan.TARGET_CLIENT, restored.servicePlans.first().targetType)
   }
 
   @Test

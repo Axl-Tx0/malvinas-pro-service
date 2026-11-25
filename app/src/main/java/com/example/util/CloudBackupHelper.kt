@@ -3,6 +3,7 @@ package com.example.util
 import com.example.data.model.FinancialTransaction
 import com.example.data.model.ProfileType
 import com.example.data.model.Reseller
+import com.example.data.model.ServicePlan
 import com.example.data.model.TransactionType
 import com.example.data.model.UserSettings
 import com.example.data.model.VpnAccount
@@ -20,6 +21,7 @@ data class CloudBackupPayload(
   val transactions: List<FinancialTransaction> = emptyList(),
   val vpnAccounts: List<VpnAccount> = emptyList(),
   val resellers: List<Reseller> = emptyList(),
+  val servicePlans: List<ServicePlan> = emptyList(),
 ) {
   companion object {
     const val CURRENT_SCHEMA_VERSION = 1
@@ -47,6 +49,11 @@ object CloudBackupHelper {
     settingsObj.put("reminderHour", payload.settings.reminderHour)
     settingsObj.put("defaultVpnDays", payload.settings.defaultVpnDays)
     settingsObj.put("autoRecordIncomeOnPay", payload.settings.autoRecordIncomeOnPay)
+    settingsObj.put("paymentAlias", payload.settings.paymentAlias)
+    settingsObj.put("paymentCbuCvu", payload.settings.paymentCbuCvu)
+    settingsObj.put("paymentHolderName", payload.settings.paymentHolderName)
+    settingsObj.put("paymentBankOrWallet", payload.settings.paymentBankOrWallet)
+    settingsObj.put("paymentLink", payload.settings.paymentLink)
     root.put("settings", settingsObj)
 
     val txArray = JSONArray()
@@ -105,6 +112,19 @@ object CloudBackupHelper {
     }
     root.put("resellers", resellersArray)
 
+    val plansArray = JSONArray()
+    payload.servicePlans.forEach { plan ->
+      plansArray.put(
+        JSONObject().apply {
+          put("name", plan.name)
+          put("price", plan.price)
+          put("durationDays", plan.durationDays)
+          put("targetType", plan.targetType)
+        }
+      )
+    }
+    root.put("servicePlans", plansArray)
+
     return root.toString(2)
   }
 
@@ -137,6 +157,21 @@ object CloudBackupHelper {
             reminderHour = settingsObj.optLong("reminderHour", 9L).coerceIn(0L, 23L),
             defaultVpnDays = settingsObj.optLong("defaultVpnDays", 30L).coerceIn(1L, 365L),
             autoRecordIncomeOnPay = settingsObj.optBoolean("autoRecordIncomeOnPay", true),
+            paymentAlias = settingsObj.optString("paymentAlias", "").trim().take(80),
+            paymentCbuCvu = settingsObj.optString("paymentCbuCvu", "").trim().take(40),
+            paymentHolderName = settingsObj.optString("paymentHolderName", "").trim().take(80),
+            paymentBankOrWallet = settingsObj.optString("paymentBankOrWallet", "").trim().take(60),
+            paymentLink =
+              settingsObj.optString("paymentLink", "").trim().take(250).let { link ->
+                if (
+                  link.startsWith("https://", ignoreCase = true) ||
+                    link.startsWith("http://", ignoreCase = true)
+                ) {
+                  link
+                } else {
+                  ""
+                }
+              },
           )
         } else {
           UserSettings()
@@ -212,6 +247,28 @@ object CloudBackupHelper {
         )
       }
 
+      val servicePlans = mutableListOf<ServicePlan>()
+      val plansArray = root.optJSONArray("servicePlans") ?: JSONArray()
+      for (i in 0 until plansArray.length()) {
+        val obj = plansArray.optJSONObject(i) ?: continue
+        val name = obj.optString("name", "").trim().take(60)
+        if (name.isBlank()) continue
+        val targetType =
+          if (obj.optString("targetType", ServicePlan.TARGET_CLIENT) == ServicePlan.TARGET_RESELLER) {
+            ServicePlan.TARGET_RESELLER
+          } else {
+            ServicePlan.TARGET_CLIENT
+          }
+        servicePlans.add(
+          ServicePlan(
+            name = name,
+            price = obj.optDouble("price", 0.0).coerceIn(0.0, 1_000_000_000.0),
+            durationDays = obj.optLong("durationDays", 30L).coerceIn(1L, 365L),
+            targetType = targetType,
+          )
+        )
+      }
+
       Result.success(
         CloudBackupPayload(
           schemaVersion = schemaVersion,
@@ -221,6 +278,7 @@ object CloudBackupHelper {
           transactions = transactions,
           vpnAccounts = vpnAccounts,
           resellers = resellers,
+          servicePlans = servicePlans,
         )
       )
     } catch (e: Exception) {

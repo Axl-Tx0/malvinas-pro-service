@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountBalance
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
@@ -29,13 +30,18 @@ import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.People
+import androidx.compose.material.icons.filled.PictureAsPdf
+import androidx.compose.material.icons.filled.RocketLaunch
 import androidx.compose.material.icons.filled.Storefront
+import androidx.compose.material.icons.filled.TableChart
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -76,6 +82,10 @@ fun OverviewScreen(
   onOpenVpnTab: () -> Unit,
   onOpenResellersTab: () -> Unit,
   onOpenFinancialSummary: () -> Unit,
+  onOpenQuickCollection: () -> Unit = {},
+  onOpenPaymentDetails: () -> Unit = {},
+  onExportMonthPdf: () -> Unit = {},
+  onExportMonthCsv: () -> Unit = {},
   modifier: Modifier = Modifier,
 ) {
   var selectedFilter by remember { mutableStateOf(TxFilter.ALL) }
@@ -159,6 +169,85 @@ fun OverviewScreen(
         onClick = onOpenResellersTab,
         modifier = Modifier.fillMaxWidth().testTag("summary_resellers_card"),
       )
+    }
+
+    item {
+      Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (data.summary.vpnUnpaidCount > 0) {
+          FilledTonalButton(
+            onClick = onOpenQuickCollection,
+            modifier = Modifier.fillMaxWidth().testTag("overview_quick_collection_button"),
+            shape = RoundedCornerShape(12.dp),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.RocketLaunch,
+              contentDescription = null,
+              modifier = Modifier.size(18.dp),
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+              text = "Cola rápida de cobranza (${data.summary.vpnUnpaidCount} pendiente(s))",
+              fontWeight = FontWeight.SemiBold,
+            )
+          }
+        }
+        FilledTonalButton(
+          onClick = onOpenPaymentDetails,
+          modifier = Modifier.fillMaxWidth().testTag("overview_payment_details_button"),
+          shape = RoundedCornerShape(12.dp),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.AccountBalance,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+          )
+          Spacer(modifier = Modifier.width(8.dp))
+          Text(
+            text =
+              if (data.settings.paymentAlias.isNotBlank()) {
+                "Datos de cobro · Alias: ${data.settings.paymentAlias}"
+              } else if (data.settings.hasPaymentInfo) {
+                "Datos de cobro listos para enviar"
+              } else {
+                "Configurar datos de cobro (Alias / CBU / MP)"
+              },
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            fontWeight = FontWeight.Medium,
+          )
+        }
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+          OutlinedButton(
+            onClick = onExportMonthPdf,
+            modifier = Modifier.weight(1f).testTag("overview_export_pdf_button"),
+            shape = RoundedCornerShape(12.dp),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.PictureAsPdf,
+              contentDescription = null,
+              modifier = Modifier.size(16.dp),
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text("Balance PDF", maxLines = 1)
+          }
+          OutlinedButton(
+            onClick = onExportMonthCsv,
+            modifier = Modifier.weight(1f).testTag("overview_export_csv_button"),
+            shape = RoundedCornerShape(12.dp),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.TableChart,
+              contentDescription = null,
+              modifier = Modifier.size(16.dp),
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text("Excel (CSV)", maxLines = 1)
+          }
+        }
+      }
     }
 
     item {
